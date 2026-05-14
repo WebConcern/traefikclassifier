@@ -11,11 +11,13 @@ type TraefikGeoIPCityAsn struct {
 	Next       http.Handler
 	Name       string
 	Options    Options
+	Classifier *Classifier
 	LookupAsn  LookupGeoIPAsn
 	LookupCity LookupGeoIPCity
 }
 
 func (mw *TraefikGeoIPCityAsn) ServeHTTP(reqWr http.ResponseWriter, req *http.Request) {
+	StripHeaders(req)
 	ipStr := getClientIP(req, mw.Options)
 	req.Header.Set(IPAddressHeader, ipStr)
 	res, err := mw.LookupCity(net.ParseIP(ipStr))
@@ -45,6 +47,7 @@ func (mw *TraefikGeoIPCityAsn) ServeHTTP(reqWr http.ResponseWriter, req *http.Re
 		req.Header.Set(GeohashHeader, res.geohash)
 		req.Header.Set(PostalCodeHeader, res.postalCode)
 	}
+	asnNumber := Unknown
 	resAsn, err := mw.LookupAsn(net.ParseIP(ipStr))
 	if err != nil {
 		if mw.Options.Debug {
@@ -53,9 +56,11 @@ func (mw *TraefikGeoIPCityAsn) ServeHTTP(reqWr http.ResponseWriter, req *http.Re
 		req.Header.Set(ASNSystemNumberHeader, Unknown)
 		req.Header.Set(ASNOrganizationHeader, Unknown)
 	} else {
+		asnNumber = resAsn.number
 		req.Header.Set(ASNSystemNumberHeader, resAsn.number)
 		req.Header.Set(ASNOrganizationHeader, resAsn.organization)
 	}
 
+	mw.Classifier.Classify(req, ipStr, asnNumber)
 	mw.Next.ServeHTTP(reqWr, req)
 }

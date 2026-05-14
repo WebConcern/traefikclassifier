@@ -25,7 +25,6 @@ func TestGeoIPConfig(t *testing.T) {
 	// }
 
 	mwCfg.CityDBPath = "./non-existing"
-	mw.ResetLookup()
 	_, err := mw.New(context.TODO(), nil, mwCfg, "")
 	if err != nil {
 		t.Fatalf("Must not fail on missing DB")
@@ -47,7 +46,6 @@ func TestGeoIPBasic(t *testing.T) {
 		called = true
 	})
 
-	mw.ResetLookup()
 	instance, err := mw.New(context.TODO(), next, mwCfg, "traefik-geoip")
 	if err != nil {
 		t.Fatalf("Error creating %v", err)
@@ -72,7 +70,6 @@ func TestMissingGeoIPDB(t *testing.T) {
 	called := false
 	next := http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) { called = true })
 
-	mw.ResetLookup()
 	instance, err := mw.New(context.TODO(), next, mwCfg, "traefik-geoip")
 	if err != nil {
 		t.Fatalf("Error creating %v", err)
@@ -100,7 +97,6 @@ func TestGeoIPFromRemoteAddr(t *testing.T) {
 	mwCfg.CityDBPath = "data/mmdb/GeoLite2-City.mmdb"
 
 	next := http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {})
-	mw.ResetLookup()
 	instance, _ := mw.New(context.TODO(), next, mwCfg, "traefik-geoip")
 
 	req := httptest.NewRequest(http.MethodGet, "http://localhost", nil)
@@ -134,7 +130,6 @@ func TestGeoIPFromXForwardedFor(t *testing.T) {
 	mwCfg.PreferXForwardedForHeader = true
 
 	next := http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {})
-	mw.ResetLookup()
 	instance, _ := mw.New(context.TODO(), next, mwCfg, "traefik-geoip")
 
 	req := httptest.NewRequest(http.MethodGet, "http://localhost", nil)
@@ -171,7 +166,6 @@ func TestGeoIPCountryDBFromRemoteAddr(t *testing.T) {
 	mwCfg.CountryDBPath = "data/mmdb/GeoLite2-Country.mmdb"
 
 	next := http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {})
-	mw.ResetLookup()
 	instance, _ := mw.New(context.TODO(), next, mwCfg, "traefik-geoip")
 
 	req := httptest.NewRequest(http.MethodGet, "http://localhost", nil)
@@ -189,7 +183,6 @@ func TestGeoIpCityWithSpecialCharacters(t *testing.T) {
 	mwCfg.Iso88591 = false
 
 	next := http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {})
-	mw.ResetLookup()
 	instance, _ := mw.New(context.TODO(), next, mwCfg, "traefik-geoip")
 
 	req := httptest.NewRequest(http.MethodGet, "http://localhost", nil)

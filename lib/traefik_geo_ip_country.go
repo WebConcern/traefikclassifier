@@ -11,10 +11,12 @@ type TraefikGeoIPCountry struct {
 	Next          http.Handler
 	Name          string
 	Options       Options
+	Classifier    *Classifier
 	LookupCountry LookupGeoIPCountry
 }
 
 func (mw *TraefikGeoIPCountry) ServeHTTP(reqWr http.ResponseWriter, req *http.Request) {
+	StripHeaders(req)
 	ipStr := getClientIP(req, mw.Options)
 	req.Header.Set(IPAddressHeader, ipStr)
 	res, err := mw.LookupCountry(net.ParseIP(ipStr))
@@ -28,5 +30,6 @@ func (mw *TraefikGeoIPCountry) ServeHTTP(reqWr http.ResponseWriter, req *http.Re
 		req.Header.Set(CountryHeader, res.country)
 		req.Header.Set(CountryCodeHeader, res.countryCode)
 	}
+	mw.Classifier.Classify(req, ipStr, "")
 	mw.Next.ServeHTTP(reqWr, req)
 }

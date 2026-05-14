@@ -11,10 +11,12 @@ type TraefikGeoIPCity struct {
 	Next       http.Handler
 	Name       string
 	Options    Options
+	Classifier *Classifier
 	LookupCity LookupGeoIPCity
 }
 
 func (mw *TraefikGeoIPCity) ServeHTTP(reqWr http.ResponseWriter, req *http.Request) {
+	StripHeaders(req)
 	ipStr := getClientIP(req, mw.Options)
 	req.Header.Set(IPAddressHeader, ipStr)
 	res, err := mw.LookupCity(net.ParseIP(ipStr))
@@ -45,5 +47,6 @@ func (mw *TraefikGeoIPCity) ServeHTTP(reqWr http.ResponseWriter, req *http.Reque
 		req.Header.Set(PostalCodeHeader, res.postalCode)
 	}
 
+	mw.Classifier.Classify(req, ipStr, "")
 	mw.Next.ServeHTTP(reqWr, req)
 }

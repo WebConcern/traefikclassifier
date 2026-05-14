@@ -1,4 +1,4 @@
-// Package traefikclassifier is a Traefik plugin for Maxmind GeoIP2.
+// Package traefikclassifier is a Traefik plugin for GeoIP lookups and traffic classification.
 package traefikclassifier
 
 import (
@@ -10,46 +10,41 @@ import (
 	lib "github.com/WebConcern/traefikclassifier/lib"
 )
 
-// ResetLookup reset lookup function.
-func ResetLookup() {
-	// lookupAsn = nil
-	// lookupCity = nil
-	// lookupCountry = nil
-}
-
 // CreateConfig creates the default plugin configuration.
 func CreateConfig() *lib.Config {
-	return &lib.Config{
-		// CityDBPath: DefaultDBPath,
-	}
+	return &lib.Config{}
 }
 
-// New created a new TraefikGeoIP plugin.
-//
-//nolint:gocyclo
+// New creates a new traefik-classifier plugin instance.
 func New(_ context.Context, next http.Handler, cfg *lib.Config, name string) (http.Handler, error) {
 	lookupCity, lookupCountry, lookupAsn, err := factoryLookups(cfg, name)
+
+	classifier := lib.NewClassifier(cfg)
+
 	if err != nil {
 		if cfg.FailInError {
 			log.Fatalf("%s", err.Error())
-			// return nil, err
 		}
 
 		stderrLogger := log.New(os.Stderr, "ERROR: ", log.LstdFlags|log.Lshortfile)
 		stderrLogger.Printf("%s. Only processing IpHeader.", err.Error())
 		return &lib.TraefikGeoIP{
-			Next:    next,
-			Name:    name,
-			Options: lib.ConfigToOptions(cfg),
-		}, nil // err
+			Next:       next,
+			Name:       name,
+			Options:    lib.ConfigToOptions(cfg),
+			Classifier: classifier,
+		}, nil
 	}
+
+	opts := lib.ConfigToOptions(cfg)
 
 	switch {
 	case cfg.LightMode && lookupCity != nil && lookupAsn != nil:
 		return &lib.TraefikGeoIPCityAsnLightMode{
 			Next:       next,
 			Name:       name,
-			Options:    lib.ConfigToOptions(cfg),
+			Options:    opts,
+			Classifier: classifier,
 			LookupAsn:  lookupAsn,
 			LookupCity: lookupCity,
 		}, nil
@@ -58,7 +53,8 @@ func New(_ context.Context, next http.Handler, cfg *lib.Config, name string) (ht
 		return &lib.TraefikGeoIPCityAsn{
 			Next:       next,
 			Name:       name,
-			Options:    lib.ConfigToOptions(cfg),
+			Options:    opts,
+			Classifier: classifier,
 			LookupAsn:  lookupAsn,
 			LookupCity: lookupCity,
 		}, nil
@@ -66,21 +62,24 @@ func New(_ context.Context, next http.Handler, cfg *lib.Config, name string) (ht
 		return &lib.TraefikGeoIPCityLightMode{
 			Next:       next,
 			Name:       name,
-			Options:    lib.ConfigToOptions(cfg),
+			Options:    opts,
+			Classifier: classifier,
 			LookupCity: lookupCity,
 		}, nil
 	case lookupCity != nil:
 		return &lib.TraefikGeoIPCity{
 			Next:       next,
 			Name:       name,
-			Options:    lib.ConfigToOptions(cfg),
+			Options:    opts,
+			Classifier: classifier,
 			LookupCity: lookupCity,
 		}, nil
 	case lookupCountry != nil && lookupAsn != nil:
 		return &lib.TraefikGeoIPCountryAsn{
 			Next:          next,
 			Name:          name,
-			Options:       lib.ConfigToOptions(cfg),
+			Options:       opts,
+			Classifier:    classifier,
 			LookupAsn:     lookupAsn,
 			LookupCountry: lookupCountry,
 		}, nil
@@ -88,22 +87,25 @@ func New(_ context.Context, next http.Handler, cfg *lib.Config, name string) (ht
 		return &lib.TraefikGeoIPCountry{
 			Next:          next,
 			Name:          name,
-			Options:       lib.ConfigToOptions(cfg),
+			Options:       opts,
+			Classifier:    classifier,
 			LookupCountry: lookupCountry,
 		}, nil
 	case lookupAsn != nil:
 		return &lib.TraefikGeoIPAsn{
-			Next:      next,
-			Name:      name,
-			Options:   lib.ConfigToOptions(cfg),
-			LookupAsn: lookupAsn,
+			Next:       next,
+			Name:       name,
+			Options:    opts,
+			Classifier: classifier,
+			LookupAsn:  lookupAsn,
 		}, nil
 	default:
 		return &lib.TraefikGeoIPNotFound{
-			Next:    next,
-			Name:    name,
-			Options: lib.ConfigToOptions(cfg),
-		}, nil // fmt.Errorf("none GeoIP DB configured")
+			Next:       next,
+			Name:       name,
+			Options:    opts,
+			Classifier: classifier,
+		}, nil
 	}
 }
 

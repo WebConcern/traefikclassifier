@@ -11,11 +11,13 @@ type TraefikGeoIPCountryAsn struct {
 	Next          http.Handler
 	Name          string
 	Options       Options
+	Classifier    *Classifier
 	LookupAsn     LookupGeoIPAsn
 	LookupCountry LookupGeoIPCountry
 }
 
 func (mw *TraefikGeoIPCountryAsn) ServeHTTP(reqWr http.ResponseWriter, req *http.Request) {
+	StripHeaders(req)
 	ipStr := getClientIP(req, mw.Options)
 	req.Header.Set(IPAddressHeader, ipStr)
 	res, err := mw.LookupCountry(net.ParseIP(ipStr))
@@ -29,6 +31,7 @@ func (mw *TraefikGeoIPCountryAsn) ServeHTTP(reqWr http.ResponseWriter, req *http
 		req.Header.Set(CountryHeader, res.country)
 		req.Header.Set(CountryCodeHeader, res.countryCode)
 	}
+	asnNumber := Unknown
 	resAsn, err := mw.LookupAsn(net.ParseIP(ipStr))
 	if err != nil {
 		if mw.Options.Debug {
@@ -37,9 +40,11 @@ func (mw *TraefikGeoIPCountryAsn) ServeHTTP(reqWr http.ResponseWriter, req *http
 		req.Header.Set(ASNSystemNumberHeader, Unknown)
 		req.Header.Set(ASNOrganizationHeader, Unknown)
 	} else {
+		asnNumber = resAsn.number
 		req.Header.Set(ASNSystemNumberHeader, resAsn.number)
 		req.Header.Set(ASNOrganizationHeader, resAsn.organization)
 	}
 
+	mw.Classifier.Classify(req, ipStr, asnNumber)
 	mw.Next.ServeHTTP(reqWr, req)
 }

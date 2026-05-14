@@ -8,15 +8,18 @@ import (
 
 // TraefikGeoIPAsn is a middleware that looks up the city of the client IP address from the GeoIP2 database.
 type TraefikGeoIPAsn struct {
-	Next      http.Handler
-	Name      string
-	Options   Options
-	LookupAsn LookupGeoIPAsn
+	Next       http.Handler
+	Name       string
+	Options    Options
+	Classifier *Classifier
+	LookupAsn  LookupGeoIPAsn
 }
 
 func (mw *TraefikGeoIPAsn) ServeHTTP(reqWr http.ResponseWriter, req *http.Request) {
+	StripHeaders(req)
 	ipStr := getClientIP(req, mw.Options)
 	req.Header.Set(IPAddressHeader, ipStr)
+	asnNumber := Unknown
 	res, err := mw.LookupAsn(net.ParseIP(ipStr))
 	if err != nil {
 		if mw.Options.Debug {
@@ -25,8 +28,10 @@ func (mw *TraefikGeoIPAsn) ServeHTTP(reqWr http.ResponseWriter, req *http.Reques
 		req.Header.Set(ASNSystemNumberHeader, Unknown)
 		req.Header.Set(ASNOrganizationHeader, Unknown)
 	} else {
+		asnNumber = res.number
 		req.Header.Set(ASNSystemNumberHeader, res.number)
 		req.Header.Set(ASNOrganizationHeader, res.organization)
 	}
+	mw.Classifier.Classify(req, ipStr, asnNumber)
 	mw.Next.ServeHTTP(reqWr, req)
 }

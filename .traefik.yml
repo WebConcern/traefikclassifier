@@ -3,7 +3,7 @@ import: github.com/WebConcern/traefikclassifier
 
 name: traefikclassifier
 displayName: Traefik Classifier
-summary: 'Traefik middleware that enriches HTTP requests with geographic and network data from MaxMind GeoIP databases.'
+summary: 'GeoIP lookups and traffic classification (datacenter, VPN, Tor, AI crawler detection).'
 
 testData:
   cityDbPath: 'data/mmdb/GeoLite2-City.mmdb'
