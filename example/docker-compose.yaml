@@ -1,0 +1,61 @@
+services:
+
+  traefik:
+    image: "traefik:v3.2"
+    container_name: "traefik"
+    restart: unless-stopped
+    command:
+      #- "--log.level=DEBUG"
+      - "--api.insecure=true"
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--entryPoints.web.address=:80"
+      - "--experimental.localPlugins.traefikclassifier.moduleName=github.com/WebConcern/traefikclassifier"
+    ports:
+      - "80:80"
+      - "8080:8080"
+    volumes:
+      - "/var/run/docker.sock:/var/run/docker.sock:ro"
+      - "../.:/plugins-local/src/github.com/WebConcern/traefikclassifier"
+      - geoipupdate_data:/usr/share/GeoIP
+    networks:
+      - traefikclassifier_example
+
+  whoami:
+    image: "traefik/whoami"
+    container_name: "traefik-whoami"
+    restart: unless-stopped
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.whoami.rule=Host(`localhost`)"
+      - "traefik.http.routers.whoami.entrypoints=web"
+      - "traefik.http.middlewares.traefikclassifier.plugin.traefikclassifier.cityDbPath=/usr/share/GeoIP/GeoLite2-City.mmdb"
+      - "traefik.http.middlewares.traefikclassifier.plugin.traefikclassifier.asnDbPath=/usr/share/GeoIP/GeoLite2-ASN.mmdb"
+      - "traefik.http.middlewares.traefikclassifier.plugin.traefikclassifier.lightMode=true"
+      - "traefik.http.middlewares.traefikclassifier.plugin.traefikclassifier.ipHeader=X-IP"
+      - "traefik.http.middlewares.traefikclassifier.plugin.traefikclassifier.iso88591=true"
+      # - "traefik.http.middlewares.traefikclassifier.plugin.traefikclassifier.preferXForwardedForHeader=true"
+      # - "traefik.http.middlewares.traefikclassifier.plugin.traefikclassifier.failInError=true"
+      - "traefik.http.routers.whoami.middlewares=traefikclassifier"
+    networks:
+      - traefikclassifier_example
+
+  geoipupdate:
+    container_name: cii_geoipupdate
+    image: ghcr.io/maxmind/geoipupdate
+    restart: unless-stopped
+    # restart: on-failure
+    env_file:
+      - ./maxmind.env
+    volumes:
+      - geoipupdate_data:/usr/share/GeoIP
+    networks:
+      - traefikclassifier_example
+
+volumes:
+  geoipupdate_data:
+
+networks:
+  traefikclassifier_example:
+    name: traefikclassifier_example
+    driver: bridge

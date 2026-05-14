@@ -1,0 +1,88 @@
+run:
+  timeout: 3m
+#  skip-files: []
+#  skip-dirs: [geoip2]
+
+linters-settings:
+  govet:
+    enable-all: true
+    disable:
+      - fieldalignment
+  golint:
+    min-confidence: 0
+  gocyclo:
+    min-complexity: 12
+  goconst:
+    min-len: 5
+    min-occurrences: 4
+  misspell:
+    locale: US
+  funlen:
+    lines: -1
+    statements: 50
+  godox:
+    keywords:
+      - FIXME
+  gofumpt:
+    extra-rules: true
+  depguard:
+    rules:
+      Main:
+        allow:
+          - $gostd
+          - github.com/WebConcern/traefikclassifier
+          #- github.com/IncSW/geoip2
+
+linters:
+  enable-all: true
+  disable:
+    - perfsprint
+    - canonicalheader
+    - sqlclosecheck # not relevant (SQL)
+    - rowserrcheck # not relevant (SQL)
+    - execinquery # not relevant (SQL)
+    - cyclop # duplicate of gocyclo
+    - bodyclose # Too many false positives: https://github.com/timakin/bodyclose/issues/30
+    - dupl
+    - testpackage
+    - tparallel
+    - paralleltest
+    - nlreturn
+    - wsl
+    - exhaustive
+    - exhaustruct
+    - err113
+    - wrapcheck
+    - noctx
+    - lll
+    - gomnd
+    - forbidigo
+    - varnamelen
+    #- deadcode # deprecated
+    #- exhaustivestruct # deprecated
+    #- golint # deprecated
+    #- ifshort # deprecated
+    #- interfacer # deprecated
+    #- maligned # deprecated
+    #- nosnakecase # deprecated
+    #- scopelint # deprecated
+    #- scopelint # deprecated
+    #- structcheck # deprecated
+    #- varcheck # deprecated
+    #- ifshort #deprecated
+
+issues:
+  exclude-use-default: false
+  max-per-linter: 0
+  max-same-issues: 0
+  exclude: []
+  exclude-dirs: [geoip2]
+  exclude-rules:
+    - path: middleware.go
+      linters:
+        - gochecknoglobals
+    - path: (.+)_test.go
+      linters:
+        - goconst
+        - funlen
+        - godot

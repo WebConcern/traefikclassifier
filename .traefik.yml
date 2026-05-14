@@ -1,0 +1,10 @@
+type: middleware
+import: github.com/WebConcern/traefikclassifier
+
+name: traefikclassifier
+displayName: Traefik Classifier
+summary: 'Traefik middleware that enriches HTTP requests with geographic and network data from MaxMind GeoIP databases.'
+
+testData:
+  cityDbPath: 'data/mmdb/GeoLite2-City.mmdb'
+  asnDbPath: 'data/mmdb/GeoLite2-ASN.mmdb'
