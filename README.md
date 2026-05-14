@@ -222,66 +222,48 @@ Using the [official Traefik Helm chart](https://artifacthub.io/packages/helm/tra
 
 ```yaml
 experimental:
-  plugins:
+  localPlugins:
     traefikclassifier:
       moduleName: github.com/WebConcern/traefikclassifier
-      version: v0.1.0
 
 deployment:
   additionalVolumes:
-    - name: geoip2
+    - name: plugins-local
       emptyDir: {}
-    - name: classifier-data
+    - name: data
       emptyDir: {}
   initContainers:
-    - name: init-geoip
+    - name: init-traefik-data
       image: curlimages/curl
-      volumeMounts:
-        - name: geoip2
-          mountPath: /data/geoip2
       command: ["sh", "-c"]
       args:
         - |
-          mkdir -p /data/geoip2
-          LOCKFILE="/data/geoip2/.downloading"
-          CITY_DB="/data/geoip2/GeoLite2-City.mmdb"
-          ASN_DB="/data/geoip2/GeoLite2-ASN.mmdb"
-          if [ ! -f "$CITY_DB" ] || [ ! -f "$ASN_DB" ]; then
-            if ( set -o noclobber; echo "$$" > "$LOCKFILE" ) 2> /dev/null; then
-              [ ! -f "$CITY_DB" ] && echo "Downloading GeoLite2-City..." && curl -LfsS https://github.com/P3TERX/GeoLite.mmdb/raw/download/GeoLite2-City.mmdb -o "$CITY_DB"
-              [ ! -f "$ASN_DB" ] && echo "Downloading GeoLite2-ASN..." && curl -LfsS https://github.com/P3TERX/GeoLite.mmdb/raw/download/GeoLite2-ASN.mmdb -o "$ASN_DB"
-              rm -f "$LOCKFILE"
-              echo "GeoIP download complete."
-            else
-              echo "Another process is downloading. Waiting..."
-              while [ -f "$LOCKFILE" ]; do sleep 2; done
-            fi
-          else
-            echo "GeoLite2 databases already exist."
-          fi
-    - name: init-classifier-data
-      image: curlimages/curl
-      volumeMounts:
-        - name: classifier-data
-          mountPath: /data/traefik-classifier
-      command: ["sh", "-c"]
-      args:
-        - |
-          mkdir -p /data/traefik-classifier
-          DATACENTER="/data/traefik-classifier/bad-asn-list.csv"
-          VPN="/data/traefik-classifier/vpn-ipv4.txt"
-          TOR="/data/traefik-classifier/tor-exits.txt"
+          mkdir -p /data/geoip2 /data/traefik-classifier /plugins-local/src/github.com/WebConcern/traefikclassifier
+
+          echo "Downloading GeoLite2 databases..."
+          curl -LfsS https://github.com/P3TERX/GeoLite.mmdb/raw/download/GeoLite2-City.mmdb -o /data/geoip2/GeoLite2-City.mmdb
+          curl -LfsS https://github.com/P3TERX/GeoLite.mmdb/raw/download/GeoLite2-ASN.mmdb -o /data/geoip2/GeoLite2-ASN.mmdb
+
           echo "Downloading classifier data..."
-          curl -LfsS https://raw.githubusercontent.com/brianhama/bad-asn-list/master/bad-asn-list.csv -o "${DATACENTER}.tmp" && mv "${DATACENTER}.tmp" "$DATACENTER"
-          curl -LfsS https://raw.githubusercontent.com/X4BNet/lists_vpn/main/output/vpn/ipv4.txt -o "${VPN}.tmp" && mv "${VPN}.tmp" "$VPN"
-          curl -LfsS https://check.torproject.org/torbulkexitlist -o "${TOR}.tmp" && mv "${TOR}.tmp" "$TOR"
-          echo "Classifier data download complete."
+          curl -LfsS https://raw.githubusercontent.com/brianhama/bad-asn-list/master/bad-asn-list.csv -o /data/traefik-classifier/bad-asn-list.csv
+          curl -LfsS https://raw.githubusercontent.com/X4BNet/lists_vpn/main/output/vpn/ipv4.txt -o /data/traefik-classifier/vpn-ipv4.txt
+          curl -LfsS https://check.torproject.org/torbulkexitlist -o /data/traefik-classifier/tor-exits.txt
+
+          echo "Downloading plugin source..."
+          curl -LfsS https://github.com/WebConcern/traefikclassifier/archive/refs/tags/v0.1.0.tar.gz | tar xz --strip-components=1 -C /plugins-local/src/github.com/WebConcern/traefikclassifier
+
+          echo "Init complete."
+      volumeMounts:
+        - name: data
+          mountPath: /data
+        - name: plugins-local
+          mountPath: /plugins-local
 
 additionalVolumeMounts:
-  - name: geoip2
-    mountPath: /geoip2
-  - name: classifier-data
-    mountPath: /data/traefik-classifier
+  - name: data
+    mountPath: /data
+  - name: plugins-local
+    mountPath: /plugins-local
 ```
 
 ### Middleware CRD
@@ -297,8 +279,8 @@ metadata:
 spec:
   plugin:
     traefikclassifier:
-      cityDbPath: "/geoip2/GeoLite2-City.mmdb"
-      asnDbPath: "/geoip2/GeoLite2-ASN.mmdb"
+      cityDbPath: "/data/geoip2/GeoLite2-City.mmdb"
+      asnDbPath: "/data/geoip2/GeoLite2-ASN.mmdb"
 ```
 
 GeoIP + traffic classification:
@@ -312,8 +294,8 @@ metadata:
 spec:
   plugin:
     traefikclassifier:
-      cityDbPath: "/geoip2/GeoLite2-City.mmdb"
-      asnDbPath: "/geoip2/GeoLite2-ASN.mmdb"
+      cityDbPath: "/data/geoip2/GeoLite2-City.mmdb"
+      asnDbPath: "/data/geoip2/GeoLite2-ASN.mmdb"
       datacenterFile: "/data/traefik-classifier/bad-asn-list.csv"
       vpnFile: "/data/traefik-classifier/vpn-ipv4.txt"
       torFile: "/data/traefik-classifier/tor-exits.txt"
