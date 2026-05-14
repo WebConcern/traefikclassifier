@@ -27,7 +27,7 @@ package lib
 func base32Encode(x uint64) string {
 	alphabet := "0123456789bcdefghjkmnpqrstuvwxyz"
 	b := [12]byte{}
-	for i := range 12 {
+	for i := 0; i < 12; i++ { //nolint:intrange
 		b[11-i] = alphabet[x&0x1f]
 		x >>= 5
 	}

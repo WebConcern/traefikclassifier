@@ -36,8 +36,8 @@ test-yaegi: && _clean-yaegi
   TMP=$(mktemp -d yaegi.XXXXXX -p /tmp)
   WRK="${TMP}/go/src/github.com/WebConcern"
   mkdir -p ${WRK}
-  ln -s `pwd` "${WRK}"
-  cd "${WRK}/$(basename `pwd`)"
+  ln -s `pwd` "${WRK}/traefikclassifier"
+  cd "${WRK}/traefikclassifier"
   env GOPATH="${TMP}/go" yaegi test -v
 
 # lint and test
