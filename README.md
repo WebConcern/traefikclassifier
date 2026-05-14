@@ -1,5 +1,7 @@
 # Traefik Classifier
 
+[![Build](https://github.com/WebConcern/traefikclassifier/actions/workflows/build.yaml/badge.svg)](https://github.com/WebConcern/traefikclassifier/actions/workflows/build.yaml)
+
 Traefik middleware plugin that enriches HTTP requests with geographic and network information from [MaxMind](https://www.maxmind.com) GeoIP2 / GeoLite2 databases. Downstream services receive location and network headers without any application-level GeoIP logic.
 
 Supports [GeoIP2](https://www.maxmind.com/en/geoip2-databases) (commercial) and [GeoLite2](https://dev.maxmind.com/geoip/geolite2-free-geolocation-data) (free) databases.

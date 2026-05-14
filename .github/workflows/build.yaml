@@ -12,4 +12,20 @@ on:
       - main
 jobs:
   build:
-    uses: traefik-plugins/workflows/.github/workflows/build.yaml@main
+    name: Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 10
+      - uses: wagoid/commitlint-github-action@v6
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: go install mvdan.cc/gofumpt@latest
+      - run: go install github.com/traefik/yaegi/cmd/yaegi@latest
+      - uses: golangci/golangci-lint-action@v6
+        with:
+          args: "--help"
+      - uses: extractions/setup-just@v2
+      - run: just test
