@@ -38,7 +38,7 @@ linters:
     - canonicalheader
     - sqlclosecheck # not relevant (SQL)
     - rowserrcheck # not relevant (SQL)
-    - execinquery # not relevant (SQL)
+    #- execinquery # deprecated
     - cyclop # duplicate of gocyclo
     - bodyclose # Too many false positives: https://github.com/timakin/bodyclose/issues/30
     - dupl
@@ -53,7 +53,7 @@ linters:
     - wrapcheck
     - noctx
     - lll
-    - gomnd
+    #- gomnd # deprecated
     - forbidigo
     - varnamelen
     #- deadcode # deprecated
