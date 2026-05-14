@@ -17,9 +17,12 @@ func CreateConfig() *lib.Config {
 
 // New creates a new traefik-classifier plugin instance.
 func New(_ context.Context, next http.Handler, cfg *lib.Config, name string) (http.Handler, error) {
-	lookupCity, lookupCountry, lookupAsn, err := factoryLookups(cfg, name)
+	classifier, err := lib.NewClassifier(cfg)
+	if err != nil {
+		return nil, err
+	}
 
-	classifier := lib.NewClassifier(cfg)
+	lookupCity, lookupCountry, lookupAsn, err := factoryLookups(cfg, name)
 
 	if err != nil {
 		if cfg.FailInError {

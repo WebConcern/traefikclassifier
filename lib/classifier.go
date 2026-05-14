@@ -3,6 +3,7 @@ package lib
 import (
 	"bufio"
 	"encoding/csv"
+	"fmt"
 	"io"
 	"log"
 	"net"
@@ -10,7 +11,6 @@ import (
 	"os"
 	"strings"
 	"sync"
-	"time"
 )
 
 var defaultAIBots = []string{
@@ -29,37 +29,46 @@ var defaultAIBots = []string{
 	"meta-externalagent",
 }
 
-const defaultRefreshSeconds = 21600
-
-const retrySeconds = 30
-
-// Classifier holds traffic classification data loaded from external lists.
+// Classifier holds traffic classification data loaded once at startup.
+// All fields are immutable after construction — no mutex needed.
 type Classifier struct {
-	mu             sync.RWMutex
 	datacenterASNs map[string]bool
 	vpnNets        []*net.IPNet
 	torExits       map[string]bool
 	aiBots         []string
-	lastRefresh    time.Time
-	refreshSeconds int
-	config         *Config
 }
 
-// NewClassifier creates a new Classifier and performs the initial data load.
-func NewClassifier(config *Config) *Classifier {
-	refreshSeconds := config.RefreshSeconds
-	if refreshSeconds <= 0 {
-		refreshSeconds = defaultRefreshSeconds
+var (
+	classifierMu       sync.Mutex
+	classifierInstance *Classifier
+)
+
+// NewClassifier returns the shared Classifier singleton, creating it on the first call.
+func NewClassifier(config *Config) (*Classifier, error) {
+	classifierMu.Lock()
+	defer classifierMu.Unlock()
+
+	if classifierInstance != nil {
+		return classifierInstance, nil
 	}
+
 	c := &Classifier{
 		datacenterASNs: make(map[string]bool),
 		torExits:       make(map[string]bool),
 		aiBots:         defaultAIBots,
-		refreshSeconds: refreshSeconds,
-		config:         config,
 	}
-	c.loadData()
-	return c
+	if err := c.loadData(config); err != nil {
+		return nil, err
+	}
+	classifierInstance = c
+	return classifierInstance, nil
+}
+
+// ResetClassifier clears the singleton so the next NewClassifier call creates a fresh instance.
+func ResetClassifier() {
+	classifierMu.Lock()
+	defer classifierMu.Unlock()
+	classifierInstance = nil
 }
 
 // Classify sets traffic classification headers on the request.
@@ -69,28 +78,12 @@ func (c *Classifier) Classify(req *http.Request, ipStr, asnNumber string) {
 		return
 	}
 
-	defer func() {
-		if r := recover(); r != nil {
-			log.Printf("[traefik-classifier] Recovered from panic: %v", r)
-		}
-	}()
-
-	c.mu.RLock()
-	needsRefresh := time.Since(c.lastRefresh) > time.Duration(c.refreshSeconds)*time.Second
-	c.mu.RUnlock()
-
-	if needsRefresh {
-		c.loadData()
-	}
-
 	userAgent := req.Header.Get("User-Agent")
 
-	c.mu.RLock()
 	isDatacenter := c.checkDatacenter(asnNumber)
 	isVPN := c.checkVPN(ipStr)
 	isTor := c.checkTor(ipStr)
 	isAIBot := c.checkAIBot(userAgent)
-	c.mu.RUnlock()
 
 	trafficType := "residential"
 	if isTor {
@@ -110,87 +103,48 @@ func (c *Classifier) Classify(req *http.Request, ipStr, asnNumber string) {
 	req.Header.Set(TrafficAIBotHeader, boolStr(isAIBot))
 }
 
-func (c *Classifier) loadData() {
-	var newASNs map[string]bool
-	var newVPNs []*net.IPNet
-	var newTors map[string]bool
-	var newBots []string
-	anyLoaded := false
+func (c *Classifier) loadData(config *Config) error {
+	if config.DatacenterFile != "" {
+		asns, err := loadDatacenterASNs(config.DatacenterFile)
+		if err != nil {
+			return fmt.Errorf("failed to load datacenter ASNs: %w", err)
+		}
+		c.datacenterASNs = asns
+		log.Printf("[traefik-classifier] Loaded %d datacenter ASNs", len(asns))
+	}
 
-	if c.config.DatacenterFile != "" {
-		if asns, err := loadDatacenterASNs(c.config.DatacenterFile); err == nil {
-			newASNs = asns
-			anyLoaded = true
-			log.Printf("[traefik-classifier] Loaded %d datacenter ASNs", len(asns))
+	if config.VPNFile != "" {
+		nets, skipped, err := loadVPNNetworks(config.VPNFile)
+		if err != nil {
+			return fmt.Errorf("failed to load VPN networks: %w", err)
+		}
+		c.vpnNets = nets
+		if skipped > 0 {
+			log.Printf("[traefik-classifier] Loaded %d VPN networks (%d invalid lines skipped)", len(nets), skipped)
 		} else {
-			log.Printf("[traefik-classifier] Failed to load datacenter ASNs: %v", err)
+			log.Printf("[traefik-classifier] Loaded %d VPN networks", len(nets))
 		}
 	}
 
-	if c.config.VPNFile != "" {
-		if nets, skipped, err := loadVPNNetworks(c.config.VPNFile); err == nil {
-			newVPNs = nets
-			anyLoaded = true
-			if skipped > 0 {
-				log.Printf("[traefik-classifier] Loaded %d VPN networks (%d invalid lines skipped)", len(nets), skipped)
-			} else {
-				log.Printf("[traefik-classifier] Loaded %d VPN networks", len(nets))
-			}
-		} else {
-			log.Printf("[traefik-classifier] Failed to load VPN networks: %v", err)
+	if config.TorFile != "" {
+		exits, err := loadTorExits(config.TorFile)
+		if err != nil {
+			return fmt.Errorf("failed to load Tor exits: %w", err)
 		}
+		c.torExits = exits
+		log.Printf("[traefik-classifier] Loaded %d Tor exit nodes", len(exits))
 	}
 
-	if c.config.TorFile != "" {
-		if exits, err := loadTorExits(c.config.TorFile); err == nil {
-			newTors = exits
-			anyLoaded = true
-			log.Printf("[traefik-classifier] Loaded %d Tor exit nodes", len(exits))
-		} else {
-			log.Printf("[traefik-classifier] Failed to load Tor exits: %v", err)
+	if config.AIBotFile != "" {
+		bots, err := loadAIBots(config.AIBotFile)
+		if err != nil {
+			return fmt.Errorf("failed to load AI bots: %w", err)
 		}
+		c.aiBots = bots
+		log.Printf("[traefik-classifier] Loaded %d AI bot patterns", len(bots))
 	}
 
-	if c.config.AIBotFile != "" {
-		if bots, err := loadAIBots(c.config.AIBotFile); err == nil {
-			newBots = bots
-			anyLoaded = true
-			log.Printf("[traefik-classifier] Loaded %d AI bot patterns", len(bots))
-		} else {
-			log.Printf("[traefik-classifier] Failed to load AI bots: %v", err)
-		}
-	}
-
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if time.Since(c.lastRefresh) <= time.Duration(c.refreshSeconds)*time.Second {
-		return
-	}
-
-	if newASNs != nil {
-		c.datacenterASNs = newASNs
-	}
-	if newVPNs != nil {
-		c.vpnNets = newVPNs
-	}
-	if newTors != nil {
-		c.torExits = newTors
-	}
-	if newBots != nil {
-		c.aiBots = newBots
-	}
-
-	hasConfiguredFiles := c.config.DatacenterFile != "" || c.config.VPNFile != "" ||
-		c.config.TorFile != "" || c.config.AIBotFile != ""
-
-	if !hasConfiguredFiles || anyLoaded {
-		c.lastRefresh = time.Now()
-	} else {
-		// All configured files failed — retry sooner instead of waiting the full refresh interval
-		c.lastRefresh = time.Now().Add(-time.Duration(c.refreshSeconds)*time.Second + time.Duration(retrySeconds)*time.Second)
-		log.Printf("[traefik-classifier] All file loads failed, retrying in %ds", retrySeconds)
-	}
+	return nil
 }
 
 func (c *Classifier) checkDatacenter(asn string) bool {

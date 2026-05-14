@@ -5,9 +5,15 @@ import (
 	"net"
 	"os"
 	"strconv"
+	"sync"
 
 	geoip2 "github.com/WebConcern/traefikclassifier/geoip2"
 	geoip2_iso88591 "github.com/WebConcern/traefikclassifier/geoip2_iso88591"
+)
+
+var (
+	lookupAsnMu       sync.Mutex
+	lookupAsnInstance LookupGeoIPAsn
 )
 
 // GeoIPAsnResult in memory, this should have between 126 and 180 bytes. On average, consider 150 bytes.
@@ -49,26 +55,38 @@ func CreateAsnDBLookupIso88591(rdr *geoip2_iso88591.ASNReader) LookupGeoIPAsn {
 	}
 }
 
-// NewLookupAsn Create a new Lookup.
+// NewLookupAsn returns the shared ASN lookup singleton, creating it on the first call.
 func NewLookupAsn(dbPath, name string, iso88591 bool) (LookupGeoIPAsn, error) {
+	lookupAsnMu.Lock()
+	defer lookupAsnMu.Unlock()
+
+	if lookupAsnInstance != nil {
+		return lookupAsnInstance, nil
+	}
+
 	if _, err := os.Stat(dbPath); err != nil {
 		return nil, fmt.Errorf("asn DB not found: db=%s, name=%s, err=%w", dbPath, name, err)
 	}
-	var lookupAsn LookupGeoIPAsn
 
 	if iso88591 {
 		rdr, err := geoip2_iso88591.NewASNReaderFromFile(dbPath)
 		if err != nil {
 			return nil, fmt.Errorf("asn lookup DB is not initialized: db=%s, name=%s, err=%w", dbPath, name, err)
 		}
-		lookupAsn = CreateAsnDBLookupIso88591(rdr)
+		lookupAsnInstance = CreateAsnDBLookupIso88591(rdr)
 	} else {
 		rdr, err := geoip2.NewASNReaderFromFile(dbPath)
 		if err != nil {
 			return nil, fmt.Errorf("asn lookup DB is not initialized: db=%s, name=%s, err=%w", dbPath, name, err)
 		}
-		lookupAsn = CreateAsnDBLookup(rdr)
+		lookupAsnInstance = CreateAsnDBLookup(rdr)
 	}
-	// log.Printf("[geoip2] ASN lookup DB initialized: db=%s, name=%s, lookup=%v", dbPath, name, lookupAsn)
-	return lookupAsn, nil
+	return lookupAsnInstance, nil
+}
+
+// ResetLookupAsn clears the singleton for testing.
+func ResetLookupAsn() {
+	lookupAsnMu.Lock()
+	defer lookupAsnMu.Unlock()
+	lookupAsnInstance = nil
 }

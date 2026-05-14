@@ -18,7 +18,15 @@ const (
 	ValidIPNoCity    = "20.1.184.61"
 )
 
+func resetSingletons() {
+	lmw.ResetClassifier()
+	lmw.ResetLookupCity()
+	lmw.ResetLookupCountry()
+	lmw.ResetLookupAsn()
+}
+
 func TestGeoIPConfig(t *testing.T) {
+	resetSingletons()
 	mwCfg := mw.CreateConfig()
 	// if mw.DefaultDBPath != mwCfg.CityDBPath {
 	// 	t.Fatalf("Incorrect path")
@@ -30,6 +38,7 @@ func TestGeoIPConfig(t *testing.T) {
 		t.Fatalf("Must not fail on missing DB")
 	}
 
+	resetSingletons()
 	mwCfg.CityDBPath = "justfile"
 	_, err = mw.New(context.TODO(), nil, mwCfg, "")
 	if err != nil {
@@ -38,6 +47,7 @@ func TestGeoIPConfig(t *testing.T) {
 }
 
 func TestGeoIPBasic(t *testing.T) {
+	resetSingletons()
 	mwCfg := mw.CreateConfig()
 	mwCfg.CityDBPath = "data/mmdb/GeoLite2-City.mmdb"
 
@@ -64,6 +74,7 @@ func TestGeoIPBasic(t *testing.T) {
 }
 
 func TestMissingGeoIPDB(t *testing.T) {
+	resetSingletons()
 	mwCfg := mw.CreateConfig()
 	mwCfg.CityDBPath = "./missing"
 
@@ -93,6 +104,7 @@ func TestMissingGeoIPDB(t *testing.T) {
 }
 
 func TestGeoIPFromRemoteAddr(t *testing.T) {
+	resetSingletons()
 	mwCfg := mw.CreateConfig()
 	mwCfg.CityDBPath = "data/mmdb/GeoLite2-City.mmdb"
 
@@ -125,6 +137,7 @@ func TestGeoIPFromRemoteAddr(t *testing.T) {
 }
 
 func TestGeoIPFromXForwardedFor(t *testing.T) {
+	resetSingletons()
 	mwCfg := mw.CreateConfig()
 	mwCfg.CityDBPath = "data/mmdb/GeoLite2-City.mmdb"
 	mwCfg.PreferXForwardedForHeader = true
@@ -162,6 +175,7 @@ func TestGeoIPFromXForwardedFor(t *testing.T) {
 }
 
 func TestGeoIPCountryDBFromRemoteAddr(t *testing.T) {
+	resetSingletons()
 	mwCfg := mw.CreateConfig()
 	mwCfg.CountryDBPath = "data/mmdb/GeoLite2-Country.mmdb"
 
@@ -178,6 +192,7 @@ func TestGeoIPCountryDBFromRemoteAddr(t *testing.T) {
 }
 
 func TestGeoIpCityWithSpecialCharacters(t *testing.T) {
+	resetSingletons()
 	mwCfg := mw.CreateConfig()
 	mwCfg.CityDBPath = "data/mmdb/GeoLite2-City.mmdb"
 	mwCfg.Iso88591 = false

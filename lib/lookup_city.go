@@ -5,9 +5,15 @@ import (
 	"net"
 	"os"
 	"strconv"
+	"sync"
 
 	geoip2 "github.com/WebConcern/traefikclassifier/geoip2"
 	geoip2_iso88591 "github.com/WebConcern/traefikclassifier/geoip2_iso88591"
+)
+
+var (
+	lookupCityMu       sync.Mutex
+	lookupCityInstance LookupGeoIPCity
 )
 
 // GeoIPCityResult in memory, this should have between 126 and 180 bytes. On average, consider 150 bytes.
@@ -99,26 +105,38 @@ func CreateCityDBLookupIso88591(rdr *geoip2_iso88591.CityReader) LookupGeoIPCity
 	}
 }
 
-// NewLookupCity Create a new Lookup.
+// NewLookupCity returns the shared city lookup singleton, creating it on the first call.
 func NewLookupCity(dbPath, name string, iso88591 bool) (LookupGeoIPCity, error) {
+	lookupCityMu.Lock()
+	defer lookupCityMu.Unlock()
+
+	if lookupCityInstance != nil {
+		return lookupCityInstance, nil
+	}
+
 	if _, err := os.Stat(dbPath); err != nil {
 		return nil, fmt.Errorf("city DB not found: db=%s, name=%s, err=%w", dbPath, name, err)
 	}
-	var lookupCity LookupGeoIPCity
 
 	if iso88591 {
 		rdr, err := geoip2_iso88591.NewCityReaderFromFile(dbPath)
 		if err != nil {
 			return nil, fmt.Errorf("city lookup DB is not initialized: db=%s, name=%s, err=%w", dbPath, name, err)
 		}
-		lookupCity = CreateCityDBLookupIso88591(rdr)
+		lookupCityInstance = CreateCityDBLookupIso88591(rdr)
 	} else {
 		rdr, err := geoip2.NewCityReaderFromFile(dbPath)
 		if err != nil {
 			return nil, fmt.Errorf("city lookup DB is not initialized: db=%s, name=%s, err=%w", dbPath, name, err)
 		}
-		lookupCity = CreateCityDBLookup(rdr)
+		lookupCityInstance = CreateCityDBLookup(rdr)
 	}
-	// log.Printf("[geoip2] City lookup DB initialized: db=%s, name=%s, lookup=%v", dbPath, name, lookupCity)
-	return lookupCity, nil
+	return lookupCityInstance, nil
+}
+
+// ResetLookupCity clears the singleton for testing.
+func ResetLookupCity() {
+	lookupCityMu.Lock()
+	defer lookupCityMu.Unlock()
+	lookupCityInstance = nil
 }

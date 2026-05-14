@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
-	"time"
 )
 
 func writeTempFile(t *testing.T, name, content string) string {
@@ -19,9 +18,19 @@ func writeTempFile(t *testing.T, name, content string) string {
 	return path
 }
 
+func mustNewClassifier(t *testing.T, cfg *Config) *Classifier {
+	t.Helper()
+	ResetClassifier()
+	c, err := NewClassifier(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return c
+}
+
 func TestClassifyDatacenter(t *testing.T) {
 	asnFile := writeTempFile(t, "asn.csv", "asn_number,name\n16509,AMAZON\n14061,DIGITALOCEAN\n")
-	c := NewClassifier(&Config{DatacenterFile: asnFile})
+	c := mustNewClassifier(t, &Config{DatacenterFile: asnFile})
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	c.Classify(req, "192.0.2.1", "16509")
@@ -32,7 +41,7 @@ func TestClassifyDatacenter(t *testing.T) {
 
 func TestClassifyResidential(t *testing.T) {
 	asnFile := writeTempFile(t, "asn.csv", "asn_number,name\n16509,AMAZON\n")
-	c := NewClassifier(&Config{DatacenterFile: asnFile})
+	c := mustNewClassifier(t, &Config{DatacenterFile: asnFile})
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	c.Classify(req, "198.51.100.1", "3320")
@@ -43,7 +52,7 @@ func TestClassifyResidential(t *testing.T) {
 
 func TestClassifyVPN(t *testing.T) {
 	vpnFile := writeTempFile(t, "vpn.txt", "192.0.2.0/24\n198.51.100.0/24\n")
-	c := NewClassifier(&Config{VPNFile: vpnFile})
+	c := mustNewClassifier(t, &Config{VPNFile: vpnFile})
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	c.Classify(req, "198.51.100.50", "")
@@ -54,7 +63,7 @@ func TestClassifyVPN(t *testing.T) {
 
 func TestClassifyVPNNoMatch(t *testing.T) {
 	vpnFile := writeTempFile(t, "vpn.txt", "192.0.2.0/24\n")
-	c := NewClassifier(&Config{VPNFile: vpnFile})
+	c := mustNewClassifier(t, &Config{VPNFile: vpnFile})
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	c.Classify(req, "203.0.113.1", "")
@@ -64,7 +73,7 @@ func TestClassifyVPNNoMatch(t *testing.T) {
 
 func TestClassifyTor(t *testing.T) {
 	torFile := writeTempFile(t, "tor.txt", "# Tor exit nodes\n203.0.113.10\n203.0.113.11\n")
-	c := NewClassifier(&Config{TorFile: torFile})
+	c := mustNewClassifier(t, &Config{TorFile: torFile})
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	c.Classify(req, "203.0.113.10", "")
@@ -74,7 +83,7 @@ func TestClassifyTor(t *testing.T) {
 }
 
 func TestClassifyAIBot(t *testing.T) {
-	c := NewClassifier(&Config{})
+	c := mustNewClassifier(t, &Config{})
 
 	tests := []struct {
 		ua   string
@@ -102,7 +111,7 @@ func TestClassifyAIBot(t *testing.T) {
 }
 
 func TestClassifyAIBotTrafficType(t *testing.T) {
-	c := NewClassifier(&Config{})
+	c := mustNewClassifier(t, &Config{})
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Header.Set("User-Agent", "ClaudeBot/1.0")
@@ -116,7 +125,7 @@ func TestClassifyPriority(t *testing.T) {
 	torFile := writeTempFile(t, "tor.txt", "192.0.2.1\n")
 	vpnFile := writeTempFile(t, "vpn.txt", "192.0.2.0/24\n")
 
-	c := NewClassifier(&Config{
+	c := mustNewClassifier(t, &Config{
 		DatacenterFile: asnFile,
 		VPNFile:        vpnFile,
 		TorFile:        torFile,
@@ -131,34 +140,19 @@ func TestClassifyPriority(t *testing.T) {
 }
 
 func TestClassifyMissingFiles(t *testing.T) {
-	c := NewClassifier(&Config{
+	ResetClassifier()
+	_, err := NewClassifier(&Config{
 		DatacenterFile: "/nonexistent/asn.csv",
 		VPNFile:        "/nonexistent/vpn.txt",
 		TorFile:        "/nonexistent/tor.txt",
 	})
-
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	c.Classify(req, "192.0.2.1", "")
-
-	assertHeaderVal(t, req, TrafficTypeHeader, "residential")
-}
-
-func TestClassifyMissingFilesRetries(t *testing.T) {
-	c := NewClassifier(&Config{
-		DatacenterFile: "/nonexistent/asn.csv",
-	})
-	c.mu.RLock()
-	refresh := c.lastRefresh
-	c.mu.RUnlock()
-
-	expectedRetryAt := time.Now().Add(-time.Duration(c.refreshSeconds)*time.Second + time.Duration(retrySeconds)*time.Second)
-	if refresh.After(expectedRetryAt.Add(2 * time.Second)) {
-		t.Fatal("lastRefresh should be set for early retry when all loads fail")
+	if err == nil {
+		t.Fatal("expected error for missing files")
 	}
 }
 
 func TestClassifyEmptyInputs(t *testing.T) {
-	c := NewClassifier(&Config{})
+	c := mustNewClassifier(t, &Config{})
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	c.Classify(req, "", "")
@@ -172,7 +166,7 @@ func TestClassifyEmptyInputs(t *testing.T) {
 
 func TestClassifyUnknownASN(t *testing.T) {
 	asnFile := writeTempFile(t, "asn.csv", "asn_number,name\n16509,AMAZON\n")
-	c := NewClassifier(&Config{DatacenterFile: asnFile})
+	c := mustNewClassifier(t, &Config{DatacenterFile: asnFile})
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	c.Classify(req, "192.0.2.1", Unknown)
@@ -193,13 +187,12 @@ func TestClassifyNilReceiver(t *testing.T) {
 func TestClassifyIgnoresSpoofedHeaders(t *testing.T) {
 	asnFile := writeTempFile(t, "asn.csv", "asn_number,name\n16509,AMAZON\n")
 	torFile := writeTempFile(t, "tor.txt", "203.0.113.99\n")
-	c := NewClassifier(&Config{DatacenterFile: asnFile, TorFile: torFile})
+	c := mustNewClassifier(t, &Config{DatacenterFile: asnFile, TorFile: torFile})
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Header.Set(ASNSystemNumberHeader, "16509")
 	req.Header.Set(IPAddressHeader, "203.0.113.99")
 
-	// Classify with trusted values — the spoofed headers should be irrelevant
 	c.Classify(req, "198.51.100.1", "3320")
 
 	assertHeaderVal(t, req, TrafficDatacenterHeader, "false")
@@ -299,7 +292,7 @@ func TestLoadAIBots(t *testing.T) {
 
 func TestClassifyWithAIBotFile(t *testing.T) {
 	botFile := writeTempFile(t, "bots.txt", "CustomBot\n")
-	c := NewClassifier(&Config{AIBotFile: botFile})
+	c := mustNewClassifier(t, &Config{AIBotFile: botFile})
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Header.Set("User-Agent", "Mozilla/5.0 CustomBot/1.0")
@@ -310,7 +303,7 @@ func TestClassifyWithAIBotFile(t *testing.T) {
 }
 
 func TestCheckAIBot(t *testing.T) {
-	c := NewClassifier(&Config{})
+	c := mustNewClassifier(t, &Config{})
 	if c.checkAIBot("") {
 		t.Fatal("empty UA should not match")
 	}
@@ -333,7 +326,7 @@ func TestBoolStr(t *testing.T) {
 
 func TestVPNSingleIP(t *testing.T) {
 	vpnFile := writeTempFile(t, "vpn.txt", "192.0.2.1\n")
-	c := NewClassifier(&Config{VPNFile: vpnFile})
+	c := mustNewClassifier(t, &Config{VPNFile: vpnFile})
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	c.Classify(req, "192.0.2.1", "")
@@ -348,7 +341,7 @@ func TestConcurrentClassify(t *testing.T) {
 	asnFile := writeTempFile(t, "asn.csv", "asn_number,name\n16509,AMAZON\n")
 	vpnFile := writeTempFile(t, "vpn.txt", "192.0.2.0/24\n")
 	torFile := writeTempFile(t, "tor.txt", "203.0.113.50\n")
-	c := NewClassifier(&Config{
+	c := mustNewClassifier(t, &Config{
 		DatacenterFile: asnFile,
 		VPNFile:        vpnFile,
 		TorFile:        torFile,
@@ -369,18 +362,18 @@ func TestConcurrentClassify(t *testing.T) {
 	wg.Wait()
 }
 
-func TestDefaultRefreshSeconds(t *testing.T) {
-	c := NewClassifier(&Config{})
-	if c.refreshSeconds != defaultRefreshSeconds {
-		t.Fatalf("expected default refresh %d, got %d", defaultRefreshSeconds, c.refreshSeconds)
+func TestNewClassifierSingleton(t *testing.T) {
+	ResetClassifier()
+	c1, err := NewClassifier(&Config{})
+	if err != nil {
+		t.Fatal(err)
 	}
-}
-
-func TestConfigNotMutated(t *testing.T) {
-	cfg := &Config{}
-	NewClassifier(cfg)
-	if cfg.RefreshSeconds != 0 {
-		t.Fatal("NewClassifier should not mutate the caller's Config")
+	c2, err := NewClassifier(&Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c1 != c2 {
+		t.Fatal("NewClassifier must return the same instance")
 	}
 }
 

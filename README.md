@@ -16,8 +16,7 @@ Supports both [GeoIP2](https://www.maxmind.com/en/geoip2-databases) (commercial)
 - **Tor exit node detection** -- IP-based, using the [Tor Project bulk exit list](https://check.torproject.org/torbulkexitlist)
 - **AI crawler detection** -- User-Agent based (GPTBot, ClaudeBot, Google-Extended, Bytespider, and more)
 - **Header stripping** -- Inbound `X-GeoIP-*` and `X-Traffic-*` headers are removed before processing, preventing clients from spoofing
-- **Auto-refresh** -- Classification data files are reloaded periodically (default: every 6 hours)
-- **Fail-safe** -- Classification errors are caught with `recover()`; traffic always flows
+- **Singleton architecture** -- All data (GeoIP databases, classification lists) is loaded once at startup and shared across all routes, with zero per-request overhead
 - **Light mode** -- Reduces header count to essential fields only
 - **Zero external Go dependencies** -- Self-contained MMDB reader (vendored from [IncSW/geoip2](https://github.com/IncSW/geoip2))
 
@@ -101,7 +100,6 @@ You can replace this list with a custom file via the `aiBotFile` option (one sub
 | `vpnFile` | string | `""` | Path to text file with VPN CIDR ranges (one per line) |
 | `torFile` | string | `""` | Path to text file with Tor exit node IPs (one per line) |
 | `aiBotFile` | string | `""` | Path to text file with AI bot UA substrings (one per line, replaces built-in list) |
-| `refreshSeconds` | int | `21600` | Seconds between classification data file reloads (default: 6 hours) |
 
 Provide at least one database path (`cityDbPath`, `countryDbPath`, or `asnDbPath`). You can combine City + ASN or Country + ASN for richer data.
 
@@ -319,7 +317,6 @@ spec:
       datacenterFile: "/data/traefik-classifier/bad-asn-list.csv"
       vpnFile: "/data/traefik-classifier/vpn-ipv4.txt"
       torFile: "/data/traefik-classifier/tor-exits.txt"
-      refreshSeconds: 21600
 ```
 
 ### IngressRoute
@@ -343,53 +340,7 @@ spec:
           port: 80
 ```
 
-### Classification Data CronJob
-
-To keep the datacenter/VPN/Tor lists up to date, deploy a CronJob that downloads fresh data:
-
-```yaml
-apiVersion: batch/v1
-kind: CronJob
-metadata:
-  name: traefik-classifier-updater
-  namespace: traefik
-spec:
-  schedule: "30 */6 * * *"
-  jobTemplate:
-    spec:
-      ttlSecondsAfterFinished: 300
-      template:
-        spec:
-          containers:
-            - name: downloader
-              image: curlimages/curl
-              command: ["sh", "-c"]
-              args:
-                - |
-                  mkdir -p /data/traefik-classifier
-                  DATACENTER="/data/traefik-classifier/bad-asn-list.csv"
-                  VPN="/data/traefik-classifier/vpn-ipv4.txt"
-                  TOR="/data/traefik-classifier/tor-exits.txt"
-                  echo "Updating traefik classifier data..."
-                  curl -LfsS https://raw.githubusercontent.com/brianhama/bad-asn-list/master/bad-asn-list.csv -o "${DATACENTER}.tmp" && mv "${DATACENTER}.tmp" "$DATACENTER"
-                  curl -LfsS https://raw.githubusercontent.com/X4BNet/lists_vpn/main/output/vpn/ipv4.txt -o "${VPN}.tmp" && mv "${VPN}.tmp" "$VPN"
-                  curl -LfsS https://check.torproject.org/torbulkexitlist -o "${TOR}.tmp" && mv "${TOR}.tmp" "$TOR"
-                  echo "Update complete."
-              volumeMounts:
-                - name: traefik
-                  mountPath: /data
-          securityContext:
-            fsGroup: 65532
-            runAsUser: 65532
-            runAsNonRoot: true
-          restartPolicy: OnFailure
-          volumes:
-            - name: traefik
-              persistentVolumeClaim:
-                claimName: traefik
-```
-
-The plugin automatically reloads the data files every `refreshSeconds` (default: 6 hours), so changes are picked up without a restart.
+All data files (GeoIP databases and classification lists) are loaded once at startup. To update data, restart the pod (or trigger a rolling restart). The init container downloads fresh copies on each start.
 
 ## Classification Data Sources
 
