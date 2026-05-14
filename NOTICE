@@ -1,0 +1,31 @@
+Traefik Classifier
+Copyright 2020 Containous SAS
+Copyright 2020 Traefik Labs
+Copyright 2026 WebConcern
+
+This product includes software developed by third parties:
+
+---
+
+IncSW/geoip2 - MaxMind MMDB reader
+Copyright 2017 Aleksey Lin
+License: MIT
+Source: https://github.com/IncSW/geoip2
+Vendored in: geoip2/, geoip2_iso88591/
+
+---
+
+mmcloughlin/geohash - Geohash encoding
+Copyright 2015 Michael McLoughlin
+License: MIT
+Source: https://github.com/mmcloughlin/geohash
+Vendored in: lib/geohash.go
+
+---
+
+This product is derived from the following Traefik middleware plugins,
+all licensed under the Apache License 2.0:
+
+- traefik-plugins/traefikgeoip2 (https://github.com/traefik-plugins/traefikgeoip2)
+- thiagotognoli/traefikgeoip (https://github.com/thiagotognoli/traefikgeoip)
+- Maronato/traefik_geoip (https://github.com/Maronato/traefik_geoip)
