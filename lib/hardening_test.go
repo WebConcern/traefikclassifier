@@ -167,3 +167,30 @@ func BenchmarkClassifyVPN10k(b *testing.B) {
 		classifyIP(c, "188.193.88.199") // not in the list: the old linear scan's worst case
 	}
 }
+
+func TestClassifyVPNIPv4MappedCIDR(t *testing.T) {
+	vpnFile := writeTempFile(t, "vpn.txt", "::ffff:192.0.2.0/120\n")
+	c := mustNewClassifier(t, &Config{VPNFile: vpnFile})
+
+	assertHeaderVal(t, classifyIP(c, "192.0.2.5"), TrafficVPNHeader, "true")
+	assertHeaderVal(t, classifyIP(c, "192.0.3.5"), TrafficVPNHeader, "false")
+}
+
+func TestAIBotFileMissingDisablesBuiltins(t *testing.T) {
+	c := mustNewClassifier(t, &Config{AIBotFile: filepath.Join(t.TempDir(), "does-not-exist.txt")})
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("User-Agent", "GPTBot/1.0")
+	c.Classify(req, "192.0.2.1", "")
+	assertHeaderVal(t, req, TrafficAIBotHeader, "false")
+}
+
+func TestAIBotFileEmptyDisablesBuiltins(t *testing.T) {
+	botFile := writeTempFile(t, "bots.txt", "# AI bot detection disabled\n")
+	c := mustNewClassifier(t, &Config{AIBotFile: botFile})
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("User-Agent", "GPTBot/1.0")
+	c.Classify(req, "192.0.2.1", "")
+	assertHeaderVal(t, req, TrafficAIBotHeader, "false")
+}

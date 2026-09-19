@@ -101,7 +101,7 @@ You can replace this list with a custom file via the `aiBotFile` option (one sub
 | `datacenterFile` | string | `""` | Path to CSV file with datacenter ASNs (first column = ASN number) |
 | `vpnFile` | string | `""` | Path to text file with VPN CIDR ranges (one per line) |
 | `torFile` | string | `""` | Path to text file with Tor exit node IPs (one per line) |
-| `aiBotFile` | string | `""` | Path to text file with AI bot UA substrings (one per line, replaces built-in list) |
+| `aiBotFile` | string | `""` | Path to text file with AI bot UA substrings (one per line). Replaces the built-in list, also when the file is missing or empty; an empty file disables AI bot detection |
 | `refreshSeconds` | int | `3600` | How often to check data files and GeoIP databases for changes; `0` disables reloading |
 
 Provide at least one database path (`cityDbPath`, `countryDbPath`, or `asnDbPath`). You can combine City + ASN or Country + ASN for richer data.
@@ -350,7 +350,7 @@ All data files (GeoIP databases and classification lists) are loaded at startup 
 
 The reload interval is taken from the first middleware instance Traefik creates, since all instances share the same data.
 
-A CronJob that refreshes the classification lists hourly (the Tor exit list changes throughout the day). It writes to a temp file and renames it into place, and fails the job when a download fails so it shows up in monitoring. Update the GeoIP databases the same way on a weekly schedule, or with [geoipupdate](#option-1-maxmind-with-automatic-updates-recommended-for-production).
+Use a CronJob to refresh the classification lists hourly (the Tor exit list changes throughout the day). This one writes to a temp file and renames it into place, and fails the job when a download fails so it shows up in monitoring. Update the GeoIP databases the same way on a weekly schedule, or with [geoipupdate](#option-1-maxmind-with-automatic-updates-recommended-for-production).
 
 ```yaml
 apiVersion: batch/v1

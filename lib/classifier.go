@@ -147,6 +147,11 @@ func (c *Classifier) loadData(config *Config) {
 		return c.swap(len(exits), len(c.torExits), func() { c.torExits = exits })
 	})
 
+	// A configured bot file replaces the built-in list, also when it is missing or empty:
+	// an empty file is how AI bot detection is turned off.
+	if config.AIBotFile != "" {
+		c.aiBots = nil
+	}
 	c.watch("AI bot patterns", config.AIBotFile, func(path string) (int, error) {
 		bots, err := loadAIBots(path)
 		if err != nil {
