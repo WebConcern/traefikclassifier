@@ -34,6 +34,9 @@ type watchedFile struct {
 	load  func(path string) error
 }
 
+// The watch list is process-wide because the data it reloads is shared by all middleware instances.
+//
+//nolint:gochecknoglobals // process-wide registry shared by all middleware instances
 var (
 	watchedMu     sync.Mutex
 	watchedFiles  = map[string]*watchedFile{}

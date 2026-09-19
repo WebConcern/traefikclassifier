@@ -6,6 +6,9 @@ import (
 	"sort"
 )
 
+// maxIPv4 is 255.255.255.255 as a uint32.
+const maxIPv4 = ^uint32(0)
+
 // ipv4Range is an inclusive range of IPv4 addresses.
 type ipv4Range struct {
 	start, end uint32
@@ -23,7 +26,7 @@ type ipSet struct {
 func newIPSet(nets []*net.IPNet) *ipSet {
 	set := &ipSet{size: len(nets)}
 
-	var ranges []ipv4Range
+	ranges := make([]ipv4Range, 0, len(nets))
 	for _, n := range nets {
 		ip4 := n.IP.To4()
 		ones, bits := n.Mask.Size()
@@ -32,10 +35,8 @@ func newIPSet(nets []*net.IPNet) *ipSet {
 			continue
 		}
 		start := binary.BigEndian.Uint32(ip4)
-		hostMask := uint32(0xFFFFFFFF) >> uint(ones)
-		if ones == 0 {
-			hostMask = 0xFFFFFFFF
-		}
+		// Shifting a uint32 by 32 yields 0, so a /32 is a single address.
+		hostMask := maxIPv4 >> ones
 		ranges = append(ranges, ipv4Range{start: start, end: start | hostMask})
 	}
 
@@ -43,7 +44,7 @@ func newIPSet(nets []*net.IPNet) *ipSet {
 	for _, r := range ranges {
 		last := len(set.v4) - 1
 		// Merge overlapping and adjacent ranges; guard the +1 against wrapping at 255.255.255.255.
-		if last >= 0 && (r.start <= set.v4[last].end || (set.v4[last].end != 0xFFFFFFFF && r.start == set.v4[last].end+1)) {
+		if last >= 0 && (r.start <= set.v4[last].end || (set.v4[last].end != maxIPv4 && r.start == set.v4[last].end+1)) {
 			if r.end > set.v4[last].end {
 				set.v4[last].end = r.end
 			}

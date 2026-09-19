@@ -260,7 +260,7 @@ func TestGeoIPReloadKeepsDBWhenReplacementIsInvalid(t *testing.T) {
 		t.Fatal(err)
 	}
 	dbPath := filepath.Join(t.TempDir(), "GeoLite2-City.mmdb")
-	if err := os.WriteFile(dbPath, db, 0644); err != nil {
+	if err = os.WriteFile(dbPath, db, 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -273,7 +273,7 @@ func TestGeoIPReloadKeepsDBWhenReplacementIsInvalid(t *testing.T) {
 	}
 
 	// A half-written download: not a valid MMDB.
-	if err := os.WriteFile(dbPath, db[:len(db)/2], 0644); err != nil {
+	if err = os.WriteFile(dbPath, db[:len(db)/2], 0o600); err != nil {
 		t.Fatal(err)
 	}
 	future := time.Now().Add(time.Minute)

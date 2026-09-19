@@ -9,24 +9,28 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 )
 
-var defaultAIBots = []string{
-	"gptbot",
-	"chatgpt-user",
-	"oai-searchbot",
-	"claudebot",
-	"claude-web",
-	"google-extended",
-	"bytespider",
-	"ccbot",
-	"facebookbot",
-	"anthropic-ai",
-	"perplexitybot",
-	"cohere-ai",
-	"meta-externalagent",
+// defaultAIBots returns the built-in AI crawler User-Agent substrings (lowercase).
+func defaultAIBots() []string {
+	return []string{
+		"gptbot",
+		"chatgpt-user",
+		"oai-searchbot",
+		"claudebot",
+		"claude-web",
+		"google-extended",
+		"bytespider",
+		"ccbot",
+		"facebookbot",
+		"anthropic-ai",
+		"perplexitybot",
+		"cohere-ai",
+		"meta-externalagent",
+	}
 }
 
 // Classifier holds traffic classification data. Each list is loaded at startup and
@@ -40,6 +44,9 @@ type Classifier struct {
 	aiBots         []string
 }
 
+// Traefik calls New once per router using the middleware; all of them share one Classifier.
+//
+//nolint:gochecknoglobals // process-wide singleton shared by all middleware instances
 var (
 	classifierMu       sync.Mutex
 	classifierInstance *Classifier
@@ -58,7 +65,7 @@ func NewClassifier(config *Config) (*Classifier, error) {
 		datacenterASNs: make(map[string]bool),
 		vpnNets:        newIPSet(nil),
 		torExits:       make(map[string]bool),
-		aiBots:         defaultAIBots,
+		aiBots:         defaultAIBots(),
 	}
 	c.loadData(config)
 	classifierInstance = c
@@ -90,13 +97,14 @@ func (c *Classifier) Classify(req *http.Request, ipStr, asnNumber string) {
 	isAIBot := checkAIBot(aiBots, req.Header.Get("User-Agent"))
 
 	trafficType := "residential"
-	if isTor {
+	switch {
+	case isTor:
 		trafficType = "tor"
-	} else if isVPN {
+	case isVPN:
 		trafficType = "vpn"
-	} else if isAIBot {
+	case isAIBot:
 		trafficType = "ai-crawler"
-	} else if isDatacenter {
+	case isDatacenter:
 		trafficType = "datacenter"
 	}
 
@@ -205,12 +213,36 @@ func boolStr(b bool) string {
 	return "false"
 }
 
+// openDataFile opens an operator-configured data file for reading.
+func openDataFile(path string) (*os.File, error) {
+	return os.Open(filepath.Clean(path))
+}
+
+// readDataLines calls fn for every line of a data file, skipping blank lines and # comments.
+func readDataLines(path string, fn func(line string)) error {
+	f, err := openDataFile(path)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = f.Close() }() // read-only: a close error cannot lose data
+
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		fn(line)
+	}
+	return scanner.Err()
+}
+
 func loadDatacenterASNs(path string) (map[string]bool, error) {
-	f, err := os.Open(path)
+	f, err := openDataFile(path)
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }() // read-only: a close error cannot lose data
 
 	reader := csv.NewReader(f)
 	asns := make(map[string]bool)
@@ -244,26 +276,15 @@ func loadDatacenterASNs(path string) (map[string]bool, error) {
 }
 
 func loadVPNNetworks(path string) ([]*net.IPNet, int, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, 0, err
-	}
-	defer f.Close()
-
 	var nets []*net.IPNet
 	skipped := 0
-	scanner := bufio.NewScanner(f)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
+	err := readDataLines(path, func(line string) {
 		if !strings.Contains(line, "/") {
 			// A bare address is a single host: /32 for IPv4, /128 for IPv6.
 			ip := net.ParseIP(line)
 			if ip == nil {
 				skipped++
-				continue
+				return
 			}
 			if ip.To4() != nil {
 				line += "/32"
@@ -274,64 +295,37 @@ func loadVPNNetworks(path string) ([]*net.IPNet, int, error) {
 		_, cidr, err := net.ParseCIDR(line)
 		if err != nil {
 			skipped++
-			continue
+			return
 		}
 		nets = append(nets, cidr)
-	}
-	if err := scanner.Err(); err != nil {
+	})
+	if err != nil {
 		return nil, 0, err
 	}
-
 	return nets, skipped, nil
 }
 
 func loadTorExits(path string) (map[string]bool, error) {
-	f, err := os.Open(path)
+	exits := make(map[string]bool)
+	err := readDataLines(path, func(line string) {
+		// Store the canonical form so lookups match however the address is written.
+		if ip := net.ParseIP(line); ip != nil {
+			exits[ip.String()] = true
+		}
+	})
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
-
-	exits := make(map[string]bool)
-	scanner := bufio.NewScanner(f)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		// Store the canonical form so lookups match however the address is written.
-		ip := net.ParseIP(line)
-		if ip == nil {
-			continue
-		}
-		exits[ip.String()] = true
-	}
-	if err := scanner.Err(); err != nil {
-		return nil, err
-	}
-
 	return exits, nil
 }
 
 func loadAIBots(path string) ([]string, error) {
-	f, err := os.Open(path)
+	var bots []string
+	err := readDataLines(path, func(line string) {
+		bots = append(bots, strings.ToLower(line))
+	})
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
-
-	var bots []string
-	scanner := bufio.NewScanner(f)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		bots = append(bots, strings.ToLower(line))
-	}
-	if err := scanner.Err(); err != nil {
-		return nil, err
-	}
-
 	return bots, nil
 }

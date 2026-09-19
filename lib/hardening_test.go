@@ -21,7 +21,7 @@ func classifyIP(c *Classifier, ip string) *http.Request {
 // refresher sees a change even on filesystems with coarse timestamps.
 func rewriteFile(t *testing.T, path, content string) {
 	t.Helper()
-	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	future := time.Now().Add(time.Minute)
@@ -148,12 +148,12 @@ func TestLoadTorExitsRejectsOverlongLine(t *testing.T) {
 }
 
 func BenchmarkClassifyVPN10k(b *testing.B) {
-	var lines []string
+	lines := make([]string, 0, 10000)
 	for i := 0; i < 10000; i++ {
 		lines = append(lines, fmt.Sprintf("%d.%d.%d.0/24", 11+i/65536, i/256%256, i%256))
 	}
 	path := filepath.Join(b.TempDir(), "vpn.txt")
-	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")), 0644); err != nil {
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")), 0o600); err != nil {
 		b.Fatal(err)
 	}
 	ResetClassifier()

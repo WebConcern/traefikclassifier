@@ -11,6 +11,9 @@ import (
 	geoip2_iso88591 "github.com/WebConcern/traefikclassifier/geoip2_iso88591"
 )
 
+// Traefik calls New once per router using the middleware; all of them share one database.
+//
+//nolint:gochecknoglobals // process-wide singleton shared by all middleware instances
 var (
 	lookupAsnMu       sync.Mutex
 	lookupAsnInstance LookupGeoIPAsn
