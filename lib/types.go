@@ -69,6 +69,7 @@ type Config struct {
 	VPNFile                   string `json:"vpnFile,omitempty"`
 	TorFile                   string `json:"torFile,omitempty"`
 	AIBotFile                 string `json:"aiBotFile,omitempty"`
+	RefreshSeconds            int    `json:"refreshSeconds,omitempty"`
 }
 
 // ConfigToOptions converts the plugin configuration to plugin options.

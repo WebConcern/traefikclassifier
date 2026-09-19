@@ -6,13 +6,17 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"time"
 
 	lib "github.com/WebConcern/traefikclassifier/lib"
 )
 
+// defaultRefreshSeconds is how often data files are checked for changes.
+const defaultRefreshSeconds = 3600
+
 // CreateConfig creates the default plugin configuration.
 func CreateConfig() *lib.Config {
-	return &lib.Config{}
+	return &lib.Config{RefreshSeconds: defaultRefreshSeconds}
 }
 
 // New creates a new traefik-classifier plugin instance.
@@ -21,12 +25,14 @@ func New(_ context.Context, next http.Handler, cfg *lib.Config, name string) (ht
 	if err != nil {
 		return nil, err
 	}
+	lib.StartRefresher(time.Duration(cfg.RefreshSeconds) * time.Second)
 
 	lookupCity, lookupCountry, lookupAsn, err := factoryLookups(cfg, name)
 
 	if err != nil {
+		// Fail this middleware only; log.Fatal would exit the whole Traefik process.
 		if cfg.FailInError {
-			log.Fatalf("%s", err.Error())
+			return nil, err
 		}
 
 		stderrLogger := log.New(os.Stderr, "ERROR: ", log.LstdFlags|log.Lshortfile)

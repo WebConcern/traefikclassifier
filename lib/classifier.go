@@ -29,11 +29,13 @@ var defaultAIBots = []string{
 	"meta-externalagent",
 }
 
-// Classifier holds traffic classification data loaded once at startup.
-// All fields are immutable after construction — no mutex needed.
+// Classifier holds traffic classification data. Each list is loaded at startup and
+// replaced wholesale when its file changes (see RefreshFiles); a loaded list is never
+// mutated, so readers only need the lock to take a snapshot.
 type Classifier struct {
+	mu             sync.RWMutex
 	datacenterASNs map[string]bool
-	vpnNets        []*net.IPNet
+	vpnNets        *ipSet
 	torExits       map[string]bool
 	aiBots         []string
 }
@@ -54,12 +56,11 @@ func NewClassifier(config *Config) (*Classifier, error) {
 
 	c := &Classifier{
 		datacenterASNs: make(map[string]bool),
+		vpnNets:        newIPSet(nil),
 		torExits:       make(map[string]bool),
 		aiBots:         defaultAIBots,
 	}
-	if err := c.loadData(config); err != nil {
-		return nil, err
-	}
+	c.loadData(config)
 	classifierInstance = c
 	return classifierInstance, nil
 }
@@ -78,12 +79,15 @@ func (c *Classifier) Classify(req *http.Request, ipStr, asnNumber string) {
 		return
 	}
 
-	userAgent := req.Header.Get("User-Agent")
+	c.mu.RLock()
+	datacenterASNs, vpnNets, torExits, aiBots := c.datacenterASNs, c.vpnNets, c.torExits, c.aiBots
+	c.mu.RUnlock()
 
-	isDatacenter := c.checkDatacenter(asnNumber)
-	isVPN := c.checkVPN(ipStr)
-	isTor := c.checkTor(ipStr)
-	isAIBot := c.checkAIBot(userAgent)
+	ip := net.ParseIP(ipStr)
+	isDatacenter := checkDatacenter(datacenterASNs, asnNumber)
+	isVPN := ip != nil && vpnNets.contains(ip)
+	isTor := ip != nil && torExits[ip.String()]
+	isAIBot := checkAIBot(aiBots, req.Header.Get("User-Agent"))
 
 	trafficType := "residential"
 	if isTor {
@@ -103,83 +107,90 @@ func (c *Classifier) Classify(req *http.Request, ipStr, asnNumber string) {
 	req.Header.Set(TrafficAIBotHeader, boolStr(isAIBot))
 }
 
-func (c *Classifier) loadData(config *Config) error {
-	if config.DatacenterFile != "" {
-		asns, err := loadDatacenterASNs(config.DatacenterFile)
+// loadData loads every configured list and watches it for changes. A list that
+// cannot be loaded is logged and left empty: classification degrades instead of
+// failing the middleware, which would take down every router using it.
+func (c *Classifier) loadData(config *Config) {
+	c.watch("datacenter ASNs", config.DatacenterFile, func(path string) (int, error) {
+		asns, err := loadDatacenterASNs(path)
 		if err != nil {
-			return fmt.Errorf("failed to load datacenter ASNs: %w", err)
+			return 0, err
 		}
-		c.datacenterASNs = asns
-		log.Printf("[traefik-classifier] Loaded %d datacenter ASNs", len(asns))
-	}
+		return c.swap(len(asns), len(c.datacenterASNs), func() { c.datacenterASNs = asns })
+	})
 
-	if config.VPNFile != "" {
-		nets, skipped, err := loadVPNNetworks(config.VPNFile)
+	c.watch("VPN networks", config.VPNFile, func(path string) (int, error) {
+		nets, skipped, err := loadVPNNetworks(path)
 		if err != nil {
-			return fmt.Errorf("failed to load VPN networks: %w", err)
+			return 0, err
 		}
-		c.vpnNets = nets
 		if skipped > 0 {
-			log.Printf("[traefik-classifier] Loaded %d VPN networks (%d invalid lines skipped)", len(nets), skipped)
-		} else {
-			log.Printf("[traefik-classifier] Loaded %d VPN networks", len(nets))
+			log.Printf("[traefik-classifier] Skipped %d invalid lines in %s", skipped, path)
 		}
-	}
+		set := newIPSet(nets)
+		return c.swap(len(nets), c.vpnNets.size, func() { c.vpnNets = set })
+	})
 
-	if config.TorFile != "" {
-		exits, err := loadTorExits(config.TorFile)
+	c.watch("Tor exit nodes", config.TorFile, func(path string) (int, error) {
+		exits, err := loadTorExits(path)
 		if err != nil {
-			return fmt.Errorf("failed to load Tor exits: %w", err)
+			return 0, err
 		}
-		c.torExits = exits
-		log.Printf("[traefik-classifier] Loaded %d Tor exit nodes", len(exits))
-	}
+		return c.swap(len(exits), len(c.torExits), func() { c.torExits = exits })
+	})
 
-	if config.AIBotFile != "" {
-		bots, err := loadAIBots(config.AIBotFile)
+	c.watch("AI bot patterns", config.AIBotFile, func(path string) (int, error) {
+		bots, err := loadAIBots(path)
 		if err != nil {
-			return fmt.Errorf("failed to load AI bots: %w", err)
+			return 0, err
 		}
-		c.aiBots = bots
-		log.Printf("[traefik-classifier] Loaded %d AI bot patterns", len(bots))
-	}
-
-	return nil
+		return c.swap(len(bots), len(c.aiBots), func() { c.aiBots = bots })
+	})
 }
 
-func (c *Classifier) checkDatacenter(asn string) bool {
+// watch loads a list from path, if configured, and registers it for reloading.
+// load returns the number of entries it swapped in.
+func (c *Classifier) watch(what, path string, load func(path string) (int, error)) {
+	if path == "" {
+		return
+	}
+	stamp := statFile(path)
+	if n, err := load(path); err != nil {
+		log.Printf("[traefik-classifier] ERROR: failed to load %s from %s, continuing without them: %v", what, path, err)
+	} else {
+		log.Printf("[traefik-classifier] Loaded %d %s", n, what)
+	}
+	watchFile(what, path, stamp, func(path string) error {
+		_, err := load(path)
+		return err
+	})
+}
+
+// swap replaces a list under the write lock. It refuses to replace a non-empty list
+// with an empty one, which is almost always a failed or truncated download.
+func (c *Classifier) swap(newLen, oldLen int, replace func()) (int, error) {
+	if newLen == 0 && oldLen > 0 {
+		return 0, fmt.Errorf("refusing to replace %d entries with an empty list", oldLen)
+	}
+	c.mu.Lock()
+	replace()
+	c.mu.Unlock()
+	return newLen, nil
+}
+
+func checkDatacenter(asns map[string]bool, asn string) bool {
 	if asn == "" || asn == Unknown {
 		return false
 	}
-	return c.datacenterASNs[asn]
+	return asns[asn]
 }
 
-func (c *Classifier) checkVPN(ipStr string) bool {
-	if ipStr == "" || ipStr == Unknown {
-		return false
-	}
-	ip := net.ParseIP(ipStr)
-	if ip == nil {
-		return false
-	}
-	for _, cidr := range c.vpnNets {
-		if cidr.Contains(ip) {
-			return true
-		}
-	}
-	return false
-}
-
-func (c *Classifier) checkTor(ipStr string) bool {
-	return c.torExits[ipStr]
-}
-
-func (c *Classifier) checkAIBot(ua string) bool {
+func checkAIBot(bots []string, ua string) bool {
 	if ua == "" {
 		return false
 	}
 	uaLower := strings.ToLower(ua)
-	for _, bot := range c.aiBots {
+	for _, bot := range bots {
 		if strings.Contains(uaLower, bot) {
 			return true
 		}
@@ -248,7 +259,17 @@ func loadVPNNetworks(path string) ([]*net.IPNet, int, error) {
 			continue
 		}
 		if !strings.Contains(line, "/") {
-			line = line + "/32"
+			// A bare address is a single host: /32 for IPv4, /128 for IPv6.
+			ip := net.ParseIP(line)
+			if ip == nil {
+				skipped++
+				continue
+			}
+			if ip.To4() != nil {
+				line += "/32"
+			} else {
+				line += "/128"
+			}
 		}
 		_, cidr, err := net.ParseCIDR(line)
 		if err != nil {
@@ -256,6 +277,9 @@ func loadVPNNetworks(path string) ([]*net.IPNet, int, error) {
 			continue
 		}
 		nets = append(nets, cidr)
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, 0, err
 	}
 
 	return nets, skipped, nil
@@ -275,7 +299,15 @@ func loadTorExits(path string) (map[string]bool, error) {
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
-		exits[line] = true
+		// Store the canonical form so lookups match however the address is written.
+		ip := net.ParseIP(line)
+		if ip == nil {
+			continue
+		}
+		exits[ip.String()] = true
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, err
 	}
 
 	return exits, nil
@@ -296,6 +328,9 @@ func loadAIBots(path string) ([]string, error) {
 			continue
 		}
 		bots = append(bots, strings.ToLower(line))
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, err
 	}
 
 	return bots, nil

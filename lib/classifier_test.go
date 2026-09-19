@@ -140,15 +140,16 @@ func TestClassifyPriority(t *testing.T) {
 }
 
 func TestClassifyMissingFiles(t *testing.T) {
-	ResetClassifier()
-	_, err := NewClassifier(&Config{
+	// Missing files must not fail the middleware; classification degrades instead.
+	c := mustNewClassifier(t, &Config{
 		DatacenterFile: "/nonexistent/asn.csv",
 		VPNFile:        "/nonexistent/vpn.txt",
 		TorFile:        "/nonexistent/tor.txt",
 	})
-	if err == nil {
-		t.Fatal("expected error for missing files")
-	}
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	c.Classify(req, "203.0.113.10", "16509")
+	assertHeaderVal(t, req, TrafficTypeHeader, "residential")
 }
 
 func TestClassifyEmptyInputs(t *testing.T) {
@@ -304,13 +305,13 @@ func TestClassifyWithAIBotFile(t *testing.T) {
 
 func TestCheckAIBot(t *testing.T) {
 	c := mustNewClassifier(t, &Config{})
-	if c.checkAIBot("") {
+	if checkAIBot(c.aiBots, "") {
 		t.Fatal("empty UA should not match")
 	}
-	if !c.checkAIBot("Mozilla/5.0 (compatible; GPTBot/1.0)") {
+	if !checkAIBot(c.aiBots, "Mozilla/5.0 (compatible; GPTBot/1.0)") {
 		t.Fatal("GPTBot should match")
 	}
-	if c.checkAIBot("Mozilla/5.0 (X11; Linux x86_64)") {
+	if checkAIBot(c.aiBots, "Mozilla/5.0 (X11; Linux x86_64)") {
 		t.Fatal("normal browser should not match")
 	}
 }

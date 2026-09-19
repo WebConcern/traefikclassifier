@@ -5,7 +5,10 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	mw "github.com/WebConcern/traefikclassifier"
@@ -231,4 +234,56 @@ func assertHeader(t *testing.T, req *http.Request, key, expected string) {
 	if req.Header.Get(key) != expected {
 		t.Fatalf("invalid value of header [%s] != %s", key, req.Header.Get(key))
 	}
+}
+
+func TestCreateConfigRefreshesHourly(t *testing.T) {
+	if got := mw.CreateConfig().RefreshSeconds; got != 3600 {
+		t.Fatalf("default RefreshSeconds: got %d, want 3600", got)
+	}
+}
+
+func TestFailInErrorReturnsError(t *testing.T) {
+	resetSingletons()
+	mwCfg := mw.CreateConfig()
+	mwCfg.CityDBPath = "./non-existing"
+	mwCfg.FailInError = true
+
+	if _, err := mw.New(context.TODO(), nil, mwCfg, ""); err == nil {
+		t.Fatal("expected an error for a missing DB with failInError")
+	}
+}
+
+func TestGeoIPReloadKeepsDBWhenReplacementIsInvalid(t *testing.T) {
+	resetSingletons()
+	db, err := os.ReadFile("data/mmdb/GeoLite2-City.mmdb")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dbPath := filepath.Join(t.TempDir(), "GeoLite2-City.mmdb")
+	if err := os.WriteFile(dbPath, db, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	mwCfg := mw.CreateConfig()
+	mwCfg.CityDBPath = dbPath
+	next := http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {})
+	instance, err := mw.New(context.TODO(), next, mwCfg, "traefik-geoip")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// A half-written download: not a valid MMDB.
+	if err := os.WriteFile(dbPath, db[:len(db)/2], 0644); err != nil {
+		t.Fatal(err)
+	}
+	future := time.Now().Add(time.Minute)
+	if err := os.Chtimes(dbPath, future, future); err != nil {
+		t.Fatal(err)
+	}
+	lmw.RefreshFiles()
+
+	req := httptest.NewRequest(http.MethodGet, "http://localhost", nil)
+	req.RemoteAddr = fmt.Sprintf("%s:9999", ValidIP)
+	instance.ServeHTTP(httptest.NewRecorder(), req)
+	assertHeader(t, req, lmw.CityHeader, "Munich")
 }
