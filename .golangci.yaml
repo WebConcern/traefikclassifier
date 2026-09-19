@@ -55,6 +55,7 @@ linters:
     - lll
     #- gomnd # deprecated
     - forbidigo
+    - intrange # range over int is not supported by yaegi, the interpreter Traefik runs plugins in
     - varnamelen
     #- deadcode # deprecated
     #- exhaustivestruct # deprecated

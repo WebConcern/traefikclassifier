@@ -16,7 +16,9 @@ Supports both [GeoIP2](https://www.maxmind.com/en/geoip2-databases) (commercial)
 - **Tor exit node detection** -- IP-based, using the [Tor Project bulk exit list](https://check.torproject.org/torbulkexitlist)
 - **AI crawler detection** -- User-Agent based (GPTBot, ClaudeBot, Google-Extended, Bytespider, and more)
 - **Header stripping** -- Inbound `X-GeoIP-*` and `X-Traffic-*` headers are removed before processing, preventing clients from spoofing
-- **Singleton architecture** -- All data (GeoIP databases, classification lists) is loaded once at startup and shared across all routes, with zero per-request overhead
+- **Singleton architecture** -- All data (GeoIP databases, classification lists) is loaded once and shared across all routes
+- **Hot reload** -- Data files are checked every `refreshSeconds` and reloaded when they change, without restarting Traefik
+- **Fails open** -- A missing, broken or empty data file is logged and never takes routes down; previously loaded data stays in use
 - **Light mode** -- Reduces header count to essential fields only
 - **Zero external Go dependencies** -- Self-contained MMDB reader (vendored from [IncSW/geoip2](https://github.com/IncSW/geoip2))
 
@@ -90,16 +92,17 @@ You can replace this list with a custom file via the `aiBotFile` option (one sub
 | `cityDbPath` | string | `""` | Path to a GeoIP2/GeoLite2 City database (.mmdb) |
 | `countryDbPath` | string | `""` | Path to a GeoIP2/GeoLite2 Country database (.mmdb) |
 | `asnDbPath` | string | `""` | Path to a GeoIP2/GeoLite2 ASN database (.mmdb) |
-| `preferXForwardedForHeader` | bool | `false` | Use `X-Forwarded-For` header to determine client IP |
+| `preferXForwardedForHeader` | bool | `false` | Use the first `X-Forwarded-For` entry as the client IP. That entry is client-controlled, so only enable this when a trusted proxy in front of Traefik overwrites the header |
 | `ipHeader` | string | `""` | Custom header to read client IP from (overrides RemoteAddr and X-Forwarded-For) |
-| `failInError` | bool | `false` | Fatal error if a database cannot be loaded (default: log and continue) |
+| `failInError` | bool | `false` | Fail the middleware (and so its routers) if a GeoIP database cannot be loaded (default: log and continue without GeoIP) |
 | `debug` | bool | `false` | Enable debug logging for lookup failures |
 | `lightMode` | bool | `false` | Only set code/coordinate headers, omit full names and geohash |
 | `iso88591` | bool | `false` | Encode header values in ISO-8859-1 instead of UTF-8 |
 | `datacenterFile` | string | `""` | Path to CSV file with datacenter ASNs (first column = ASN number) |
 | `vpnFile` | string | `""` | Path to text file with VPN CIDR ranges (one per line) |
 | `torFile` | string | `""` | Path to text file with Tor exit node IPs (one per line) |
-| `aiBotFile` | string | `""` | Path to text file with AI bot UA substrings (one per line, replaces built-in list) |
+| `aiBotFile` | string | `""` | Path to text file with AI bot UA substrings (one per line). Replaces the built-in list, also when the file is missing or empty; an empty file disables AI bot detection |
+| `refreshSeconds` | int | `3600` | How often to check data files and GeoIP databases for changes; `0` disables reloading |
 
 Provide at least one database path (`cityDbPath`, `countryDbPath`, or `asnDbPath`). You can combine City + ASN or Country + ASN for richer data.
 
@@ -115,14 +118,14 @@ experimental:
   plugins:
     traefikclassifier:
       moduleName: github.com/WebConcern/traefikclassifier
-      version: v0.1.0
+      version: v0.2.0
 ```
 
 Or via CLI flags:
 
 ```
 --experimental.plugins.traefikclassifier.modulename=github.com/WebConcern/traefikclassifier
---experimental.plugins.traefikclassifier.version=v0.1.0
+--experimental.plugins.traefikclassifier.version=v0.2.0
 ```
 
 Then define middleware via labels, file provider, or a Kubernetes CRD (see sections below).
@@ -218,53 +221,71 @@ X-Traffic-Vpn: false
 
 ## Kubernetes (Helm)
 
-Using the [official Traefik Helm chart](https://artifacthub.io/packages/helm/traefik/traefik), add to `values.yaml`:
+Using the [official Traefik Helm chart](https://artifacthub.io/packages/helm/traefik/traefik). The plugin reads its data from files, so the setup has three parts:
+
+1. **A shared volume** at `/data` that every Traefik pod mounts. It must be `ReadWriteMany` (for example Longhorn, NFS or CephFS) so one CronJob can update the files for all pods.
+2. **An init container** that seeds the volume, so a new pod never starts without data.
+3. **A CronJob** that keeps the files current. The plugin checks them every `refreshSeconds` and reloads changed files without a restart.
+
+### values.yaml
 
 ```yaml
 experimental:
-  localPlugins:
+  plugins:
     traefikclassifier:
       moduleName: github.com/WebConcern/traefikclassifier
+      version: v0.2.0
+
+persistence:
+  enabled: true
+  name: data
+  accessMode: ReadWriteMany
+  size: 256Mi
+  storageClass: longhorn # any storage class that supports ReadWriteMany
+  path: /data
 
 deployment:
-  additionalVolumes:
-    - name: plugins-local
-      emptyDir: {}
-    - name: data
-      emptyDir: {}
   initContainers:
     - name: init-traefik-data
       image: curlimages/curl
       command: ["sh", "-c"]
       args:
         - |
-          mkdir -p /data/geoip2 /data/traefik-classifier /plugins-local/src/github.com/WebConcern/traefikclassifier
+          # fetch URL DEST MAX_AGE_MINUTES
+          # All pods share this volume: skip files newer than MAX_AGE_MINUTES, download
+          # to a temp file and rename it into place so readers never see a partial file,
+          # and keep the existing file if a download fails. A failed download never
+          # blocks Traefik from starting; the plugin runs on the data it already has.
+          fetch() {
+            url="$1"; dest="$2"; max_age="$3"
+            if [ -n "$(find "$dest" -mmin -"$max_age" 2>/dev/null)" ]; then
+              echo "Up to date: $dest"
+              return 0
+            fi
+            tmp="$dest.tmp.$$"
+            if curl -LfsS --retry 3 --max-time 300 "$url" -o "$tmp" && [ -s "$tmp" ]; then
+              mv -f "$tmp" "$dest"
+              echo "Downloaded: $dest"
+            else
+              rm -f "$tmp"
+              echo "WARNING: download of $url failed, keeping existing $dest" >&2
+            fi
+          }
 
-          echo "Downloading GeoLite2 databases..."
-          curl -LfsS https://github.com/P3TERX/GeoLite.mmdb/raw/download/GeoLite2-City.mmdb -o /data/geoip2/GeoLite2-City.mmdb
-          curl -LfsS https://github.com/P3TERX/GeoLite.mmdb/raw/download/GeoLite2-ASN.mmdb -o /data/geoip2/GeoLite2-ASN.mmdb
+          mkdir -p /data/geoip2 /data/traefik-classifier
 
-          echo "Downloading classifier data..."
-          curl -LfsS https://raw.githubusercontent.com/brianhama/bad-asn-list/master/bad-asn-list.csv -o /data/traefik-classifier/bad-asn-list.csv
-          curl -LfsS https://raw.githubusercontent.com/X4BNet/lists_vpn/main/output/vpn/ipv4.txt -o /data/traefik-classifier/vpn-ipv4.txt
-          curl -LfsS https://check.torproject.org/torbulkexitlist -o /data/traefik-classifier/tor-exits.txt
+          fetch https://github.com/P3TERX/GeoLite.mmdb/raw/download/GeoLite2-City.mmdb /data/geoip2/GeoLite2-City.mmdb 10080
+          fetch https://github.com/P3TERX/GeoLite.mmdb/raw/download/GeoLite2-ASN.mmdb /data/geoip2/GeoLite2-ASN.mmdb 10080
 
-          echo "Downloading plugin source..."
-          curl -LfsS https://github.com/WebConcern/traefikclassifier/archive/refs/tags/v0.1.0.tar.gz | tar xz --strip-components=1 -C /plugins-local/src/github.com/WebConcern/traefikclassifier
-
-          echo "Init complete."
+          fetch https://raw.githubusercontent.com/brianhama/bad-asn-list/master/bad-asn-list.csv /data/traefik-classifier/bad-asn-list.csv 360
+          fetch https://raw.githubusercontent.com/X4BNet/lists_vpn/main/output/vpn/ipv4.txt /data/traefik-classifier/vpn-ipv4.txt 360
+          fetch https://check.torproject.org/torbulkexitlist /data/traefik-classifier/tor-exits.txt 360
       volumeMounts:
         - name: data
           mountPath: /data
-        - name: plugins-local
-          mountPath: /plugins-local
-
-additionalVolumeMounts:
-  - name: data
-    mountPath: /data
-  - name: plugins-local
-    mountPath: /plugins-local
 ```
+
+The chart names the PVC after the release (`traefik` by default); the CronJob below mounts it by that name.
 
 ### Middleware CRD
 
@@ -299,6 +320,7 @@ spec:
       datacenterFile: "/data/traefik-classifier/bad-asn-list.csv"
       vpnFile: "/data/traefik-classifier/vpn-ipv4.txt"
       torFile: "/data/traefik-classifier/tor-exits.txt"
+      refreshSeconds: 900 # check for updated files every 15 minutes
 ```
 
 ### IngressRoute
@@ -322,7 +344,68 @@ spec:
           port: 80
 ```
 
-All data files (GeoIP databases and classification lists) are loaded once at startup. To update data, restart the pod (or trigger a rolling restart). The init container downloads fresh copies on each start.
+### Keeping data current
+
+All data files (GeoIP databases and classification lists) are loaded at startup and checked for changes every `refreshSeconds` (default: one hour). A changed file is reloaded in place, without restarting Traefik. A replacement that fails to load, or a list that is suddenly empty (usually a failed download), is rejected and the previous data stays in use. A GeoIP database that is missing at startup is not picked up later; restart the pod once it exists.
+
+The reload interval is taken from the first middleware instance Traefik creates, since all instances share the same data.
+
+Use a CronJob to refresh the classification lists hourly (the Tor exit list changes throughout the day). This one writes to a temp file and renames it into place, and fails the job when a download fails so it shows up in monitoring. Update the GeoIP databases the same way on a weekly schedule, or with [geoipupdate](#option-1-maxmind-with-automatic-updates-recommended-for-production).
+
+```yaml
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: traefik-classifier-updater
+  namespace: traefik
+spec:
+  schedule: "23 * * * *"
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      ttlSecondsAfterFinished: 300
+      template:
+        spec:
+          containers:
+            - name: downloader
+              image: curlimages/curl
+              command: ["sh", "-c"]
+              args:
+                - |
+                  failed=0
+                  fetch() {
+                    url="$1"; dest="$2"
+                    tmp="$dest.tmp.$$"
+                    if curl -LfsS --retry 3 --max-time 300 "$url" -o "$tmp" && [ -s "$tmp" ]; then
+                      mv -f "$tmp" "$dest"
+                      echo "Updated: $dest"
+                    else
+                      rm -f "$tmp"
+                      echo "ERROR: download of $url failed, keeping existing $dest" >&2
+                      failed=1
+                    fi
+                  }
+
+                  mkdir -p /data/traefik-classifier
+                  fetch https://raw.githubusercontent.com/brianhama/bad-asn-list/master/bad-asn-list.csv /data/traefik-classifier/bad-asn-list.csv
+                  fetch https://raw.githubusercontent.com/X4BNet/lists_vpn/main/output/vpn/ipv4.txt /data/traefik-classifier/vpn-ipv4.txt
+                  fetch https://check.torproject.org/torbulkexitlist /data/traefik-classifier/tor-exits.txt
+                  exit $failed
+              volumeMounts:
+                - name: data
+                  mountPath: /data
+          securityContext: # match the Traefik pods so both can replace the files
+            fsGroup: 65532
+            runAsUser: 65532
+            runAsGroup: 65532
+            runAsNonRoot: true
+          restartPolicy: OnFailure
+          volumes:
+            - name: data
+              persistentVolumeClaim:
+                claimName: traefik
+```
 
 ## Classification Data Sources
 

@@ -11,9 +11,16 @@ import (
 	geoip2_iso88591 "github.com/WebConcern/traefikclassifier/geoip2_iso88591"
 )
 
+// Traefik calls New once per router using the middleware; all of them share one database.
+//
+//nolint:gochecknoglobals // process-wide singleton shared by all middleware instances
 var (
 	lookupCityMu       sync.Mutex
 	lookupCityInstance LookupGeoIPCity
+
+	// cityDB is the currently loaded database; it is swapped when the file changes.
+	cityDBMu sync.RWMutex
+	cityDB   LookupGeoIPCity
 )
 
 // GeoIPCityResult in memory, this should have between 126 and 180 bytes. On average, consider 150 bytes.
@@ -60,7 +67,7 @@ func CreateCityDBLookup(rdr *geoip2.CityReader) LookupGeoIPCity {
 		if city, ok := rec.City.Names["en"]; ok {
 			returnVal.city = city
 		}
-		if rec.Subdivisions != nil {
+		if len(rec.Subdivisions) > 0 {
 			if region, ok := rec.Subdivisions[0].Names["en"]; ok {
 				returnVal.region = region
 			}
@@ -95,7 +102,7 @@ func CreateCityDBLookupIso88591(rdr *geoip2_iso88591.CityReader) LookupGeoIPCity
 		if city, ok := rec.City.Names["en"]; ok {
 			returnVal.city = city
 		}
-		if rec.Subdivisions != nil {
+		if len(rec.Subdivisions) > 0 {
 			if region, ok := rec.Subdivisions[0].Names["en"]; ok {
 				returnVal.region = region
 			}
@@ -106,6 +113,8 @@ func CreateCityDBLookupIso88591(rdr *geoip2_iso88591.CityReader) LookupGeoIPCity
 }
 
 // NewLookupCity returns the shared city lookup singleton, creating it on the first call.
+// The database is reloaded by RefreshFiles when the file changes; a replacement that
+// fails to load is ignored and the previous database stays in use.
 func NewLookupCity(dbPath, name string, iso88591 bool) (LookupGeoIPCity, error) {
 	lookupCityMu.Lock()
 	defer lookupCityMu.Unlock()
@@ -118,20 +127,49 @@ func NewLookupCity(dbPath, name string, iso88591 bool) (LookupGeoIPCity, error) 
 		return nil, fmt.Errorf("city DB not found: db=%s, name=%s, err=%w", dbPath, name, err)
 	}
 
+	stamp := statFile(dbPath)
+	lookup, err := openCityDB(dbPath, iso88591)
+	if err != nil {
+		return nil, fmt.Errorf("city lookup DB is not initialized: db=%s, name=%s, err=%w", dbPath, name, err)
+	}
+	setCityDB(lookup)
+	watchFile("GeoIP city DB", dbPath, stamp, func(path string) error {
+		lookup, err := openCityDB(path, iso88591)
+		if err != nil {
+			return err
+		}
+		setCityDB(lookup)
+		return nil
+	})
+
+	lookupCityInstance = func(ip net.IP) (*GeoIPCityResult, error) {
+		cityDBMu.RLock()
+		lookup := cityDB
+		cityDBMu.RUnlock()
+		return lookup(ip)
+	}
+	return lookupCityInstance, nil
+}
+
+func openCityDB(dbPath string, iso88591 bool) (LookupGeoIPCity, error) {
 	if iso88591 {
 		rdr, err := geoip2_iso88591.NewCityReaderFromFile(dbPath)
 		if err != nil {
-			return nil, fmt.Errorf("city lookup DB is not initialized: db=%s, name=%s, err=%w", dbPath, name, err)
+			return nil, err
 		}
-		lookupCityInstance = CreateCityDBLookupIso88591(rdr)
-	} else {
-		rdr, err := geoip2.NewCityReaderFromFile(dbPath)
-		if err != nil {
-			return nil, fmt.Errorf("city lookup DB is not initialized: db=%s, name=%s, err=%w", dbPath, name, err)
-		}
-		lookupCityInstance = CreateCityDBLookup(rdr)
+		return CreateCityDBLookupIso88591(rdr), nil
 	}
-	return lookupCityInstance, nil
+	rdr, err := geoip2.NewCityReaderFromFile(dbPath)
+	if err != nil {
+		return nil, err
+	}
+	return CreateCityDBLookup(rdr), nil
+}
+
+func setCityDB(lookup LookupGeoIPCity) {
+	cityDBMu.Lock()
+	cityDB = lookup
+	cityDBMu.Unlock()
 }
 
 // ResetLookupCity clears the singleton for testing.

@@ -6,13 +6,17 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"time"
 
 	lib "github.com/WebConcern/traefikclassifier/lib"
 )
 
+// defaultRefreshSeconds is how often data files are checked for changes.
+const defaultRefreshSeconds = 3600
+
 // CreateConfig creates the default plugin configuration.
 func CreateConfig() *lib.Config {
-	return &lib.Config{}
+	return &lib.Config{RefreshSeconds: defaultRefreshSeconds}
 }
 
 // New creates a new traefik-classifier plugin instance.
@@ -21,12 +25,13 @@ func New(_ context.Context, next http.Handler, cfg *lib.Config, name string) (ht
 	if err != nil {
 		return nil, err
 	}
+	lib.StartRefresher(time.Duration(cfg.RefreshSeconds) * time.Second)
 
 	lookupCity, lookupCountry, lookupAsn, err := factoryLookups(cfg, name)
-
 	if err != nil {
+		// Fail this middleware only; log.Fatal would exit the whole Traefik process.
 		if cfg.FailInError {
-			log.Fatalf("%s", err.Error())
+			return nil, err
 		}
 
 		stderrLogger := log.New(os.Stderr, "ERROR: ", log.LstdFlags|log.Lshortfile)
@@ -39,76 +44,96 @@ func New(_ context.Context, next http.Handler, cfg *lib.Config, name string) (ht
 		}, nil
 	}
 
-	opts := lib.ConfigToOptions(cfg)
+	base := handlerBase{next: next, name: name, opts: lib.ConfigToOptions(cfg), classifier: classifier}
+	if lookupCity != nil {
+		return base.cityHandler(lookupCity, lookupAsn, cfg.LightMode), nil
+	}
+	return base.handler(lookupCountry, lookupAsn), nil
+}
 
+// handlerBase holds the fields every middleware variant shares.
+type handlerBase struct {
+	next       http.Handler
+	name       string
+	opts       lib.Options
+	classifier *lib.Classifier
+}
+
+// cityHandler picks the City variant, optionally combined with ASN data.
+func (b handlerBase) cityHandler(lookupCity lib.LookupGeoIPCity, lookupAsn lib.LookupGeoIPAsn, lightMode bool) http.Handler {
 	switch {
-	case cfg.LightMode && lookupCity != nil && lookupAsn != nil:
+	case lightMode && lookupAsn != nil:
 		return &lib.TraefikGeoIPCityAsnLightMode{
-			Next:       next,
-			Name:       name,
-			Options:    opts,
-			Classifier: classifier,
+			Next:       b.next,
+			Name:       b.name,
+			Options:    b.opts,
+			Classifier: b.classifier,
 			LookupAsn:  lookupAsn,
 			LookupCity: lookupCity,
-		}, nil
-
-	case lookupCity != nil && lookupAsn != nil:
+		}
+	case lookupAsn != nil:
 		return &lib.TraefikGeoIPCityAsn{
-			Next:       next,
-			Name:       name,
-			Options:    opts,
-			Classifier: classifier,
+			Next:       b.next,
+			Name:       b.name,
+			Options:    b.opts,
+			Classifier: b.classifier,
 			LookupAsn:  lookupAsn,
 			LookupCity: lookupCity,
-		}, nil
-	case cfg.LightMode && lookupCity != nil:
+		}
+	case lightMode:
 		return &lib.TraefikGeoIPCityLightMode{
-			Next:       next,
-			Name:       name,
-			Options:    opts,
-			Classifier: classifier,
+			Next:       b.next,
+			Name:       b.name,
+			Options:    b.opts,
+			Classifier: b.classifier,
 			LookupCity: lookupCity,
-		}, nil
-	case lookupCity != nil:
+		}
+	default:
 		return &lib.TraefikGeoIPCity{
-			Next:       next,
-			Name:       name,
-			Options:    opts,
-			Classifier: classifier,
+			Next:       b.next,
+			Name:       b.name,
+			Options:    b.opts,
+			Classifier: b.classifier,
 			LookupCity: lookupCity,
-		}, nil
+		}
+	}
+}
+
+// handler picks the variant when no City database is configured.
+func (b handlerBase) handler(lookupCountry lib.LookupGeoIPCountry, lookupAsn lib.LookupGeoIPAsn) http.Handler {
+	switch {
 	case lookupCountry != nil && lookupAsn != nil:
 		return &lib.TraefikGeoIPCountryAsn{
-			Next:          next,
-			Name:          name,
-			Options:       opts,
-			Classifier:    classifier,
+			Next:          b.next,
+			Name:          b.name,
+			Options:       b.opts,
+			Classifier:    b.classifier,
 			LookupAsn:     lookupAsn,
 			LookupCountry: lookupCountry,
-		}, nil
+		}
 	case lookupCountry != nil:
 		return &lib.TraefikGeoIPCountry{
-			Next:          next,
-			Name:          name,
-			Options:       opts,
-			Classifier:    classifier,
+			Next:          b.next,
+			Name:          b.name,
+			Options:       b.opts,
+			Classifier:    b.classifier,
 			LookupCountry: lookupCountry,
-		}, nil
+		}
 	case lookupAsn != nil:
 		return &lib.TraefikGeoIPAsn{
-			Next:       next,
-			Name:       name,
-			Options:    opts,
-			Classifier: classifier,
+			Next:       b.next,
+			Name:       b.name,
+			Options:    b.opts,
+			Classifier: b.classifier,
 			LookupAsn:  lookupAsn,
-		}, nil
+		}
 	default:
 		return &lib.TraefikGeoIPNotFound{
-			Next:       next,
-			Name:       name,
-			Options:    opts,
-			Classifier: classifier,
-		}, nil
+			Next:       b.next,
+			Name:       b.name,
+			Options:    b.opts,
+			Classifier: b.classifier,
+		}
 	}
 }
 
